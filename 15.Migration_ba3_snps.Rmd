@@ -1,0 +1,390 @@
+---
+title: "Aedes aegypti in Brazil - Migration analysis with BA3-SNPs"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script> 
+
+## 1. Getting started: R libraries and software
+
+### 1.1 R libraries
+
+```{r libraries, message=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(colorout)
+library(extrafont)
+library(reticulate)
+library(scales)
+library(stringr)
+library(grid)
+library(flextable)
+library(devtools)
+library(readr)
+library(purrr)
+library(ggtext)
+library(ggvenn)
+library(reshape2)
+```
+
+
+### 1.2 BA3-SNPs
+Check the documentation at https://github.com/stevemussmann/BayesAss3-SNPs
+The manuscript at https://doi.org/10.1111/2041-210X.13252
+
+
+I run the BA3-SNPs on the HPC and then downloaded the data and parsed in my laptop
+
+On the HPC
+```{bash, eval=FALSE}
+# Create and go to a directory to download it
+cd /ycga-gpfs/project/caccone/lvc26/packages;
+
+# Download from Github
+git clone https://github.com/stevemussmann/BayesAss3-SNPs.git;
+
+# We need to rename the file because the autotune (see bellow) expects 'BA3-SNPS'. Alternatively, you can edit the python script to set any name you want.
+mv BayesAss3-SNPs/BA3-SNPS-Ubuntu64 BayesAss3-SNPs/BA3-SNPS
+
+# Export path
+export PATH="/ycga-gpfs/project/caccone/lvc26/packages/BayesAss3-SNPs:$PATH"
+
+# Test it
+BA3-SNPS --help
+```
+
+```
+Bayesass
+--- Option Descriptions ---:
+  -h [ --help ]                         Prints this help message.
+  -F [ --file ] arg                     Specify input file
+  -l [ --loci ] arg                     Specify number of loci in input file
+  -s [ --seed ] arg (=10)               Specifies the random number seed
+  -i [ --iterations ] arg (=1000000)    Number of generations for mcmc
+  -n [ --sampling ] arg (=100)          Sampling interval for mcmc
+  -b [ --burnin ] arg (=100000)         Burnin length for mcmc
+  -o [ --output ] arg (=BA3out.txt)     Output file name
+  -m [ --deltaM ] arg (=0.10000000000000001)
+                                        Mixing parameter for migration rates
+  -a [ --deltaA ] arg (=0.10000000000000001)
+                                        Mixing parameter for allele frequencies
+  -f [ --deltaF ] arg (=0.10000000000000001)
+                                        Mixing parameter for inbreeding
+                                        coefficients
+  -v [ --verbose ]                      Use verbose screen output
+  -u [ --settings ]                     Output options and parameter settings
+  -g [ --genotypes ]                    Output genotypes and migrant ancestries
+  -d [ --debug ]                        Debug
+  -t [ --trace ]                        Create a trace file to monitor
+                                        convergence
+  -p [ --nolikelihood ]                 Fix likelihood to 1 and generate priors
+```
+
+### 1.3 BA3-SNPS-autotune
+
+Instead of guessing the parameters we can use the BA3-SNPS-autotune to automatically tune mixing parameters for BA3-SNPs.
+
+Check it https://github.com/stevemussmann/BA3-SNPS-autotune
+
+On the HPC
+```{bash, eval=FALSE}
+# Create and go to a directory to download it
+cd /ycga-gpfs/project/caccone/lvc26/packages;
+
+# Download from Github
+git clone https://github.com/stevemussmann/BA3-SNPS-autotune.git
+
+# Load miniconda
+module load miniconda/22.9.0
+
+# Export path
+export PATH="/ycga-gpfs/project/caccone/lvc26/packages/BA3-SNPS-autotune:$PATH"
+
+# Test it
+BA3-SNPS-autotune.py --help
+```
+
+```
+usage: BA3-SNPS-autotune.py [-h] -i IMMANC [-o OUT] -l LOCI [-r REPS] [-b BURNIN] [-g GENERATIONS] [-s SEED]
+
+options:
+  -h, --help            show this help message and exit
+  -i IMMANC, --immanc IMMANC
+                        Specify a immanc file for input.
+  -o OUT, --out OUT     Specify an output file name.
+  -l LOCI, --loci LOCI  Specify number of loci in input file.
+  -r REPS, --reps REPS  Specify maximum number of rounds of tuning parameters.
+  -b BURNIN, --burnin BURNIN
+                        Specify burnin for Bayesass runs.
+  -g GENERATIONS, --generations GENERATIONS
+                        Specify number of generations for Bayesass runs.
+  -s SEED, --seed SEED  Specify a random number seed.
+```
+
+## 2. Prepare input files
+
+We use Plink to convert the lgen format. We will use the LD pruned data.
+
+```{bash remove_related2}
+plink \
+--bfile output/populations/PopLDdecay/fileLD1 \
+--allow-no-sex \
+--keep-allele-order \
+--make-bed \
+--recode12 lgen \
+--maf 0.01 \
+--geno 0.2 \
+--out output/ba3/brazil \
+--silent;
+grep 'samples\|variants\|remaining' output/ba3/brazil.log
+```
+
+We will use 15907 variants and 385 samples for our analysis.
+
+Now we use awk to prepare the input file
+
+```{bash}
+awk '{print $2, $1, $3, $4, $5}' OFS=' ' output/ba3/brazil.lgen > output/ba3/brazil.txt;
+head output/ba3/brazil.txt
+```
+
+
+Transfer the data to HPC
+```{bash, eval=FALSE}
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/ba3/brazil.txt lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil
+```
+
+
+## 3. Run autotune
+
+We can submit the auto-tune via batch script
+
+```{bash, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=week
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=10G
+#SBATCH --time=120:00:00
+#SBATCH --job-name=autotune
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/autotune_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/autotune_%A_%a.ERROR.txt
+
+# Load miniconda
+module load miniconda/22.9.0
+
+# Export path BA3
+export PATH="/ycga-gpfs/project/caccone/lvc26/packages/BayesAss3-SNPs:$PATH"
+
+# Export path autotune
+export PATH="/ycga-gpfs/project/caccone/lvc26/packages/BA3-SNPS-autotune:$PATH"
+
+# Go to dir
+cd /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil;
+
+# Run autotune with -b 10,000 generations for burn in, -g 500,000 generations for each run, and -r 10 sequential runs of ba3
+BA3-SNPS-autotune.py -i brazil.txt -l 15907 -b 10000 -g 500000 -r 10 | tee autotune.ba3.log
+```
+
+
+Save the batch script and transfer the data to HPC
+```{bash, eval=FALSE}
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/ba3/1.autotune.sh lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil
+```
+
+Submit the batch job and once it is done we will have a set of parameters to run. We then can use more interactions and burn in.
+
+From the output
+```
+##Tuning completed early after 5 rounds.
+##M	A	F
+0.0750	0.5500	0.0188
+```
+
+## 4. Run BA3
+
+
+```{bash, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=week
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=10G
+#SBATCH --time=168:00:00
+#SBATCH --job-name=autotune
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/ba3_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/ba3_%A_%a.ERROR.txt
+
+# Export path BA3
+export PATH="/ycga-gpfs/project/caccone/lvc26/packages/BayesAss3-SNPs:$PATH"
+
+# Go to dir
+cd /ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil;
+
+# Run BA3
+BA3-SNPS \
+--verbose \
+-s100 \
+--iterations=10000000 \
+-b10000000 \
+-n1000 \
+-t \
+-g \
+--output brazil.ba3.output.txt \
+-F brazil.txt \
+--loci=15907 \
+-m0.0750 \
+-a0.5500 \
+-f0.0188 2>&1 | tee brazil.ba3.log
+
+# Explanation
+# -s100: sets random seed to 100
+# We run BA3 with 10,000,0000 iterations for MCMC
+# -b1000000: with 1,000,000 burn in (we discard the first 500,000 interactions)
+# -n1000: we sample every 1000 interactions
+# -t: to create a trace file
+# -g: to output genotypes and migrant ancestries
+# the options -m, -a, and -f are parameters from the autotune
+# -m is the mixing parameter for migration rates
+# -a is the mixing parameter for the allele frequencies
+# -f is the mixing parameter for imbreeding coeficients
+```
+
+Transfer to the cluster
+```{bash, eval=FALSE}
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/ba3/2.ba3.sh lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/
+```
+
+
+## 5. Parse the results
+
+First we need to download the data from the cluster
+
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/ba3-snps/brazil/* /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/ba3/
+```
+
+Chech the output
+```{bash}
+head output/ba3/brazil.indiv.txt
+```
+
+The command below extracts specific lines from output/ba3/brazil.indiv.txt and writes them to output/ba3/brazil2.indiv.txt. Specifically, it captures the first three lines and all lines between (and including) those containing "Migrant" and "Individual".
+```{bash}
+awk 'NR<=3 || /Migrant/,/Individual/{print $0}' output/ba3/brazil.indiv.txt > output/ba3/brazil.ind.txt
+```
+
+Parse the output using R
+The code processes the file output/ba3/brazil.ind.txt to extract individual migration data. It cleans and restructures the data into a data frame format, focusing on individuals with migration probabilities between 0 and 1. The final processed data is saved as output/ba3/migrants.csv.
+
+```{r}
+d <- readLines("output/ba3/brazil.ind.txt")
+d <- d[2:length(d)]
+head(d, 10)
+tail(d, 10)
+dlist <- split(d, f = rep(1:(length(d)/6), each = 6))
+print(dlist[[1]])
+
+# Create a data frame to store the results
+out <- matrix(character(), nrow = 0, ncol = 5)
+colnames(out) <- c("indv", "source.popln", "migrant.popln", "gen", "prob")
+
+# sink("migrant individuals.txt")
+
+for(i in 1:length(dlist)){
+  temp <- dlist[[i]]
+  
+  # individual info
+  idv <- unlist(strsplit(temp[2], split = " "))[c(3,6)]
+  
+  # ancestry data:
+  m <- unlist(strsplit(temp[4:6], split = " "))
+  m <- m[m != ""]
+  for(j in 1:length(m)){
+    temp2 <- unlist(strsplit(m[j], split = "\\[|\\]|,|:"))[c(2,3,5)]
+    out <- rbind(out, c(idv, temp2)) 
+    
+    # if(as.numeric(temp2[3]) > 0 & as.numeric(temp2[3]) < 1){
+    #   out <- rbind(out, c(idv, temp2))
+    # }
+  }
+      
+  # useful <- sapply(m, FUN = function(x){
+  #   anc <- as.numeric(unlist(strsplit(x, split = ":", fixed = TRUE))[2])
+  #   return(ifelse(test = (anc > 0) & (anc < 1), yes = TRUE, no = FALSE))
+  # })
+  # if(any(useful)){
+  #   cat(temp[2])
+  #   cat("\n")
+  #   cat(m[useful])
+  #   cat("\n\n")
+  # }
+}
+# sink()
+
+out <- as.data.frame(out, stringsAsFactors = FALSE)
+out$prob <- as.numeric(out$prob)
+out$self <- out$source.popln == out$migrant.popln
+
+out.simplified <- out[out$prob > 0 & out$prob < 1, ]
+write.csv(out.simplified, file = "output/ba3/migrant.individuals.csv", quote = FALSE, row.names = FALSE)
+```
+
+Check the output file
+```{bash}
+head output/ba3/migrant.individuals.csv
+```
+
+We did not identify any migrants.
+
+```{bash}
+#then to get the list of individuals
+cat output/ba3/migrant.individuals.csv | grep -E '18ma.'|sed 's/://g'|sed 's/Individual//g'|sed 's/Source//g'|sed 's/Popln//g'|awk '!($2="")' |head # > migrants.txt
+
+```
+
+
+
+
+
+

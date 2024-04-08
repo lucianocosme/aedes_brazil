@@ -69,6 +69,7 @@ In this repository, I am excited to share a suite of analysis code that underpin
 - [File S13:Local adaptation analysis with sambada and R.sambada](13.local_adaptation_sambada.html)
 - [File S14: Fst analsyis](14.Fst_chip.html)
 - [File S15: Migration analysis with BA3-SNPs](15.Migration_ba3_snps.html)
+- [File S16: Genotype frequencies of SNPs on the VGSC](16.Frequencies.html)
 
 ## R project with all the data is availabe in Zenodo
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10048029.svg)](https://doi.org/10.5281/zenodo.10048029)
