@@ -1,0 +1,2277 @@
+---
+title: "Ae. aegypti SNP chip: mapping probe sequences to AeagL5 genome assembly"
+date: "`r Sys.Date()`"
+author: Luciano V. Cosme
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	eval = TRUE,
+	echo = TRUE,
+	cache = TRUE,
+	class.output = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+# <span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+In this RMarkdown we will overview the probe sequences, generate sequences for mapping with BWA, test our code, and parse the output of the mapping.
+
+## R libraries
+
+```{r libraries, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(colorout)
+library(here)
+library(ggplot2)
+library(Biostrings)
+library(scales)
+library(reticulate)
+library(flextable)
+library(officer)
+library(rmdformats)
+library(extrafont)
+library(forcats)
+library(ggrepel)
+library(data.table)
+``` 
+
+
+## 1. Import the probe sequences
+
+Clear our environment and memory
+```{r clear_env1}
+# clear global environment
+rm(list = ls())
+# clear memory using garbage collection
+gc()
+```
+
+Import probe for the first genome assembly
+```{r import_data_aegypti_01, message=FALSE}
+probes_aegypti_01 <-
+  read_delim(
+    here(
+      "data", "Axiom_aegypti1_Annotation.r2.csv"
+    ),
+    delim = ",",
+    col_names = TRUE,
+    show_col_types = FALSE
+  )
+
+# check it out
+head(probes_aegypti_01)
+```
+
+We can check how many probes are in the foward or reverse strand
+```{r import_data_aegypti_03}
+unique(probes_aegypti_01$Strand)
+```
+
+All the probes are in 5' to 3' direction.
+
+Supplemental table 2 from https://doi.org/10.1534/g3.114.016196
+```{r import_data_aegypti_04}
+probes_aegypti_02 <-
+  read_delim(
+    here(
+      "data", "aegypti.csv"
+    ),
+    delim = ",",
+    col_names = TRUE,
+    show_col_types = FALSE
+  ) 
+
+# check it out
+head(probes_aegypti_02)
+```
+
+### 1.1 Generate sequences
+Generate the sequences
+```{r generate_seq_for_mapping_aegypti}
+# create function to get the reverse complement
+reverse_complement_vector <- function(dna_seqs) {
+  DNAStringSet(dna_seqs) |> reverseComplement() |> as.character()
+}
+
+# split the sequence into left and right, create sequences and names
+aegypti_seq <- 
+  probes_aegypti_02 |>
+  mutate(
+    left_seq = gsub("\\[.*", "", Sequence),
+    right_seq = gsub(".*\\]", "", Sequence),
+    allele_A_F = paste0(left_seq, `Allele A`, right_seq),
+    allele_B_F = paste0(left_seq, `Allele B`, right_seq),
+    allele_A_R = reverse_complement_vector(allele_A_F),
+    allele_B_R = reverse_complement_vector(allele_B_F),
+    allele_N_F = paste0(left_seq, "N", right_seq),
+    allele_N_R = reverse_complement_vector(allele_N_F),
+    fasta_name_F = paste0(">", Name, "_F"),
+    fasta_name_R = paste0(">", Name, "_R")
+  ) |>
+  select(
+    Name, Sequence, fasta_name_F, fasta_name_R, allele_A_F, allele_A_R, allele_B_F, allele_B_R, allele_N_F, allele_N_R
+  )
+
+# check the output
+head(aegypti_seq)
+```
+
+Creating sequences for each allele with the allele name
+```{r}
+aegypti_seq <- 
+  probes_aegypti_02 |>
+  mutate(
+    left_seq = gsub("\\[.*", "", Sequence),
+    right_seq = gsub(".*\\]", "", Sequence),
+    allele_A_F = paste0(left_seq, `Allele A`, right_seq),
+    allele_B_F = paste0(left_seq, `Allele B`, right_seq),
+    allele_A_R = reverse_complement_vector(allele_A_F),
+    allele_B_R = reverse_complement_vector(allele_B_F),
+    allele_N_F = paste0(left_seq, "N", right_seq),
+    allele_N_R = reverse_complement_vector(allele_N_F),
+    fasta_name_AF = paste0(">", Name, "_A_F"),
+    fasta_name_AR = paste0(">", Name, "_A_R"),
+    fasta_name_BF = paste0(">", Name, "_B_F"),
+    fasta_name_BR = paste0(">", Name, "_B_R"),
+    fasta_name_NF = paste0(">", Name, "_N_F"),
+    fasta_name_NR = paste0(">", Name, "_N_R")
+  ) |>
+  select(
+    Name, Sequence, fasta_name_AF, fasta_name_AR, fasta_name_BF, fasta_name_BR, fasta_name_NF, fasta_name_NR,  allele_A_F, allele_A_R, allele_B_F, allele_B_R, allele_N_F, allele_N_R
+  )
+```
+
+Create sequences
+```{r}
+# For Allele A Forward
+aegypti_allele_A_F <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_AF, allele_A_F), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_A_F, here(
+    "output", "probes", "sequences", "aegypti_A_F.fasta"
+  )
+)
+
+# For Allele A Reverse
+aegypti_allele_A_R <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_AR, allele_A_R), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_A_R, here(
+    "output", "probes", "sequences", "aegypti_A_R.fasta"
+  )
+)
+
+# For Allele B Forward
+aegypti_allele_B_F <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_BF, allele_B_F), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_B_F, here(
+    "output", "probes", "sequences", "aegypti_B_F.fasta"
+  )
+)
+
+# For Allele B Reverse
+aegypti_allele_B_R <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_BR, allele_B_R), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_B_R, here(
+    "output", "probes", "sequences", "aegypti_B_R.fasta"
+  )
+)
+
+# For Allele N Forward
+aegypti_allele_N_F <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_NF, allele_N_F), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_B_F, here(
+    "output", "probes", "sequences", "aegypti_N_F.fasta"
+  )
+)
+
+# For Allele N Reverse
+aegypti_allele_N_R <- 
+  aegypti_seq |>
+  pivot_longer(cols = c(fasta_name_NR, allele_N_R), names_to = "fasta_name") |>
+  arrange(row_number(), fasta_name) |>  # sort by row number and column
+  pull(value)
+
+writeLines(
+  aegypti_allele_N_R, here(
+    "output", "probes", "sequences", "aegypti_N_R.fasta"
+  )
+)
+```
+
+```{python}
+files = [
+    "output/probes/sequences/aegypti_A_F.fasta",
+    "output/probes/sequences/aegypti_A_R.fasta",
+    "output/probes/sequences/aegypti_B_F.fasta",
+    "output/probes/sequences/aegypti_B_R.fasta",
+]
+
+with open("output/probes/sequences/aegypti_combined.fasta", "w") as out:
+    for file_path in files:
+        with open(file_path) as file:
+            out.writelines(file.readlines())
+```
+
+
+Sanity check
+SNP                                        Sequence                                        Allele A       Allele B
+AX-93213911 TTTTAATAAGGCAGTGAAACAGCGCTGCGTATACT[A/G]AAGAAGACGGACTGTGCAACTCCACAACACTGGCG       A              G
+allele_A_F  TTTTAATAAGGCAGTGAAACAGCGCTGCGTATACT[A]AAGAAGACGGACTGTGCAACTCCACAACACTGGCG
+allele_A_R  CGCCAGTGTTGTGGAGTTGCACAGTCCGTCTTCTT[T]AGTATACGCAGCGCTGTTTCACTGCCTTATTAAAA
+allele_B_F  TTTTAATAAGGCAGTGAAACAGCGCTGCGTATACT[G]AAGAAGACGGACTGTGCAACTCCACAACACTGGCG
+allele_B_R  CGCCAGTGTTGTGGAGTTGCACAGTCCGTCTTCTT[C]AGTATACGCAGCGCTGTTTCACTGCCTTATTAAAA
+allele_N_F  TTTTAATAAGGCAGTGAAACAGCGCTGCGTATACT[N]AAGAAGACGGACTGTGCAACTCCACAACACTGGCG
+allele_N_R  CGCCAGTGTTGTGGAGTTGCACAGTCCGTCTTCTT[N]AGTATACGCAGCGCTGTTTCACTGCCTTATTAAAA
+
+Everything looks correct. We can save the sequences.
+
+Check the colnames of aegypti_seq
+```{r colnames_aegypti_seq}
+colnames(aegypti_seq)
+```
+
+Check the saved file
+```{bash checkaegypti_allele_A_F.fasta}
+head output/probes/sequences/aegypti_A_F.fasta
+```
+
+Check the saved file
+```{bash checkaegypti_allele_A_F2.fasta}
+head output/probes/sequences/aegypti_A_F.fasta
+```
+
+To remove all data from python
+```{r}
+# python
+py_run_string("import gc; gc.collect()")
+```
+
+
+### 1.2 Transfer files to cluster
+
+Transfer sequences to the cluster
+```{bash transfer_seq_cluster01, eval=FALSE}
+# transfer genomes
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/sequences lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti
+```
+
+
+### 1.3 The genome sequences
+
+We can create the directories for the genomes we want to test. 
+```{r create_output_dir_for_test3, eval=FALSE}
+# create output directories 
+dir_names <- c(
+  "genomes"
+)
+
+for (dir_name in dir_names) {
+  here("output", "probes", dir_name) |>
+    dir.create(recursive = TRUE, showWarnings = FALSE)
+}
+```
+
+
+We can also map the sequences to the reference genome of Aedes aegypti genomes and most of them will not map uniquely.
+
+#### 1.3.1 AaegL5_ncbi
+
+Available at [HERE](https://www.ncbi.nlm.nih.gov/data-hub/genome/GCF_002204515.2/)
+https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/002/204/515/GCF_002204515.2_AaegL5.0/
+Molecule name	GenBank sequence		RefSeq sequence	Unlocalized
+sequences count
+Chromosome 1	CM008043.1	=	NC_035107.1	0
+Chromosome 2	CM008044.1	=	NC_035108.1	0
+Chromosome 3	CM008045.1	=	NC_035109.1	0
+unplaced	n/a	n/a	n/a	2,306
+```{bash AaegL5_ncbi, eval=FALSE}
+# run the code on the terminal
+# I will save it on my external SSD
+
+# go to dir
+cd /Volumes/evo2/probes_genomes
+
+# download it
+curl -v -OJX GET "https://api.ncbi.nlm.nih.gov/datasets/v2alpha/genome/accession/GCF_002204515.2/download?include_annotation_type=GENOME_FASTA,GENOME_GFF,RNA_FASTA,CDS_FASTA,PROT_FASTA,SEQUENCE_REPORT&filename=GCF_002204515.2.zip" -H "Accept: application/zip";
+
+# unzip it
+unzip GCF_002204515.2.zip
+
+# rename the unziped data
+mv ncbi_dataset AaegL5_ncbi
+
+# check the scaffold names
+head -n 1 AaegL5_ncbi/data/GCF_002204515.2/GCF_002204515.2_AaegL5.0_genomic.fna
+# >NC_035107.1 Aedes aegypti strain LVP_AGWG chromosome 1, AaegL5.0 Primary Assembly, whole genome shotgun sequence
+
+# get the 3 chromosomes names
+grep "chromosome" AaegL5_ncbi/data/GCF_002204515.2/GCF_002204515.2_AaegL5.0_genomic.fna | head
+# >NC_035107.1 Aedes aegypti strain LVP_AGWG chromosome 1, AaegL5.0 Primary Assembly, whole genome shotgun sequence
+# >NC_035108.1 Aedes aegypti strain LVP_AGWG chromosome 2, AaegL5.0 Primary Assembly, whole genome shotgun sequence
+# >NC_035109.1 Aedes aegypti strain LVP_AGWG chromosome 3, AaegL5.0 Primary Assembly, whole genome shotgun sequence
+# MT	MF194022.1	NC_035159.1	
+
+# rename the remaining scaffolds
+awk '/^>NC_035107\.1/{print ">1";next} /^>NC_035108\.1/{print ">2";next} /^>NC_035109\.1/{print ">3";next} /^>NC_035159\.1/{print ">MT";next} 1' AaegL5_ncbi/data/GCF_002204515.2/GCF_002204515.2_AaegL5.0_genomic.fna > AaegL5_ncbi.fasta
+
+# check the output
+grep ">" AaegL5_ncbi.fasta | head -n 5
+# >1
+# >2
+# >3
+# >NW_018734407.1 Aedes aegypti strain LVP_AGWG unplaced genomic scaffold, AaegL5.0 Primary Assembly AGWG_AaegL5_hic_scaff_1000_PBJ_arrow, whole genome shotgun sequence
+# >NW_018734408.1 Aedes aegypti strain LVP_AGWG unplaced genomic scaffold, AaegL5.0 Primary Assembly AGWG_AaegL5_hic_scaff_1001_PBJ_arrow, whole genome shotgun sequence
+
+# rename the other scaffolds
+sed 's/^>\([^[:space:]]*\)\.1.*/>\1/' AaegL5_ncbi.fasta > AaegL5_ncbi.fasta.tmp && mv AaegL5_ncbi.fasta.tmp AaegL5_ncbi.fasta
+
+# check it
+ grep ">"  AaegL5_ncbi.fasta | head -n 5
+# >1
+# >2
+# >3
+# >NW_018734407
+# >NW_018734408
+
+# now the reference genome is ready for indexing. I will do it later on the cluster
+```
+
+Assembly statistics
+
+RefSeq	GenBank
+Genome size	1.3 Gb	1.3 Gb
+Total ungapped length	1.3 Gb	1.3 Gb
+Number of chromosomes	3	3
+Number of organelles	1	1
+Number of scaffolds	2,309	2,309
+Scaffold N50	409.8 Mb	409.8 Mb
+Scaffold L50	2	2
+Number of contigs	2,538	2,538
+Contig N50	11.8 Mb	11.8 Mb
+Contig L50	30	30
+GC percent	38	38
+Genome coverage	110.0x	110.0x
+Assembly level	Chromosome	Chromosome
+Note:  there are 2306 unplaced scaffolds in this assembly
+Chromosomes and MT scaffolds:
+    GenBank      RefSeq
+1	CM008043.1	NC_035107.1
+2	CM008044.1	NC_035108.1
+3	CM008045.1	NC_035109.1
+MT	MF194022.1	NC_035159.1
+
+
+#### 1.3.2 AaegL5_vb
+
+The genome from Vector Base
+
+Available at [HERE](https://vectorbase.org/common/downloads/release-62/AaegyptiLVP_AGWG/fasta/data/VectorBase-62_AaegyptiLVP_AGWG_Genome.fasta)
+
+```{bash AaegL5_vb, eval=FALSE}
+# run the code on the terminal
+# I will save it on my external SSD
+
+# go to dir
+cd /Volumes/evo2/probes_genomes
+
+# download it
+wget https://vectorbase.org/common/downloads/release-62/AaegyptiLVP_AGWG/fasta/data/VectorBase-62_AaegyptiLVP_AGWG_Genome.fasta
+
+# check the scaffold names
+grep ">" VectorBase-62_AaegyptiLVP_AGWG_Genome.fasta | head -n 5
+# >AaegL5_1 | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=310827022 | SO=chromosome
+# >AaegL5_2 | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=474425716 | SO=chromosome
+# >AaegL5_3 | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=409777670 | SO=chromosome
+# >AaegL5_MT | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=16790 | SO=mitochondrial_chromosome
+# >NIGP01000004 | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=30735 | SO=supercontig
+
+# rename the remaining scaffolds
+awk '/^>AaegL5_1/{print ">1"} /^>AaegL5_2/{print ">2"} /^>AaegL5_3/{print ">3"} /^>AaegL5_MT/{print ">MT"} !/^>AaegL5_1|^>AaegL5_2|^>AaegL5_3|^>AaegL5_MT/{print}' VectorBase-62_AaegyptiLVP_AGWG_Genome.fasta > AaegL5_vb.fasta
+
+
+# check the output
+grep ">" AaegL5_vb.fasta | head -n 5
+# >1
+# >2
+# >3
+# >MT
+# >NIGP01000004 | organism=Aedes_aegypti_LVP_AGWG | version=AaegL5 | length=30735 | SO=supercontig
+
+# rename the other scaffolds
+sed 's/^>\([^[:space:]]*\).*/>\1/' AaegL5_vb.fasta > AaegL5_vb.fasta.tmp && mv AaegL5_vb.fasta.tmp AaegL5_vb.fasta
+
+# check it
+cat AaegL5_vb.fasta | grep ">"  | head -n 5
+# >1
+# >2
+# >3
+# >MT
+# >NIGP01000004
+
+# now the reference genome is ready for indexing. I will do it later on the cluster
+```
+
+
+We can compress and transfer the files to the our project directory
+```{bash check_genomes_ssd, eval=FALSE}
+ls -1 /Volumes/evo2/probes_genomes/*.fasta
+```
+
+Compress genomes and put in project directory
+```{bash compress_genomes, eval=FALSE}
+for file in /Volumes/evo2/probes_genomes/*.fasta; do bgzip --threads 6 "$file" -c > /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/genomes/"$(basename "$file").gz"; done
+```
+
+
+## 3. Mapping sequences on the HPC
+
+### 3.1 Transfer files to cluster
+
+Genomes
+```{bash transfer_genomes_cluster1, eval=FALSE}
+# transfer genomes
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/genomes lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti
+```
+
+Decompress genomes
+```{bash decompress_genomes, eval=FALSE}
+# create interactive session with 1 CPU
+salloc --partition devel --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=10Gb zsh
+
+# decompress
+for file in genomes/*.gz; do gzip -d "$file"; done
+```
+
+Index with Samtools
+```{bash index_genomes_cluster_samtools, eval=FALSE}
+# load samtools
+module load SAMtools/1.16-GCCcore-10.2.0
+
+# index the genomes
+for file in /ycga-gpfs/project/caccone/lvc26/probes/genomes/*.fasta
+do
+    samtools faidx "$file"
+done
+```
+
+
+Probe sequences
+```{bash transfer_genomes_cluster2, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster.
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/sequences lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti
+```
+
+### 3.2 Index the reference genomes
+
+If you want to get BWA on the cluster or your computer
+```{bash get_bwa, eval=FALSE}
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes
+
+# download 
+wget https://github.com/lh3/bwa/releases/download/v0.7.17/bwa-0.7.17.tar.bz2
+
+# decompress
+tar -xjf bwa-0.7.17.tar.bz2
+
+# go to dir
+cd bwa-0.7.17
+
+# compile
+make
+
+# to use it on the scripts
+export PATH=/ycga-gpfs/project/caccone/lvc26/probes/bwa-0.7.17:$PATH
+```
+
+Get bowtie2
+```{bash get_bowtie2, eval=FALSE}
+# download it
+wget https://github.com/BenLangmead/bowtie2/releases/download/v2.4.4/bowtie2-2.4.4-linux-x86_64.zip
+
+# unzip
+unzip bowtie2-2.4.4-linux-x86_64.zip
+
+# export path on the batch scripts
+export PATH=/ycga-gpfs/project/caccone/lvc26/probes/bowtie2-2.4.4-linux-x86_64:$PATH
+```
+
+Get Samtools
+
+Dependency: install libncurses5-dev
+```{bash install_libncurses5-dev, eval=FALSE}
+# download
+wget https://invisible-mirror.net/archives/ncurses/ncurses-6.3.tar.gz
+
+# extract
+tar -xzf ncurses-6.3.tar.gz
+
+# move to dir
+cd ncurses-6.3
+
+# configure
+./configure --prefix=/gpfs/ycga/project/caccone/lvc26/probes/ncurses-6.3
+
+# compile
+make
+
+# install
+make install
+
+# export path
+export PATH=/gpfs/ycga/project/caccone/lvc26/probes/ncurses-6.3:$PATH
+
+# add the ncurses library directory to your LD_LIBRARY_PATH variable
+export LD_LIBRARY_PATH=/gpfs/ycga/project/caccone/lvc26/probes/ncurses-6.3/lib:$LD_LIBRARY_PATH
+
+
+```
+
+
+```{bash get_Samtools, eval=FALSE}
+# download it
+wget https://github.com/samtools/samtools/releases/download/1.13/samtools-1.13.tar.bz2
+
+# unzip
+tar -xjf samtools-1.13.tar.bz2
+
+# go to dir
+cd samtools-1.13
+
+
+# Check if the libbz2 library is installed
+ldconfig -p | grep libbz2
+
+module load GCCcore/12.2.0
+# configure it
+./configure --prefix=/ycga-gpfs/project/caccone/lvc26/probes/samtools-1.13 --with-bz2=/lib64
+
+# install it 
+make install
+
+# export path on the batch scripts
+export PATH=/ycga-gpfs/project/caccone/lvc26/probes/samtools-1.13:$PATH
+```
+
+
+Create interactive session, load modules, and test them
+```{bash modules_session_cluster, eval=FALSE}
+# create interactive session with 1 CPU
+salloc --partition devel --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120 zsh
+
+# or  create interactive session with 4 CPUs
+salloc --partition devel --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=4 --mem-per-cpu=5120 zsh
+
+# modules
+module load BWA/0.7.17-GCCcore-10.2.0 # I am having problems with it
+module load Bowtie2/2.4.2-GCCcore-1
+module load SAMtools/1.16-GCCcore-10.2.0
+
+# check if they are working or check their versions. I had issues with them and I decided to install my own versions.
+```
+
+Create files to use with Slurm
+```{bash lists_of_files, eval=FALSE}
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts
+
+# create genome files
+ls -1 /ycga-gpfs/project/caccone/lvc26/probes/aegypti/genomes/*.fasta > genomes.txt
+ls -1 /ycga-gpfs/project/caccone/lvc26/probes/aegypti/genomes/*.fasta | sed 's/.*\/\([^\/]*\)\.fasta/\1/' > genome_names.txt
+
+# create sample files
+ls -1 /ycga-gpfs/project/caccone/lvc26/probes/aegypti/sequences/*.fasta > sequences.txt
+ls -1 /ycga-gpfs/project/caccone/lvc26/probes/aegypti/sequences/*.fasta | sed 's/.*\/\([^\/]*\)\.fasta/\1/' > sequence_names.txt
+```
+
+
+Index with bwa
+
+```{bash 1a.bwa_index.sh, eval=FALSE}
+#!/bin/bash
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --job-name=bwa
+#SBATCH --partition=day
+#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=20Gb
+#SBATCH --array=1-2
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_index_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_index_%A_%a.ERROR.txt
+
+# load modules (twice the module was not working and I had to contact HPC support)
+# module load BWA/0.7.17-GCCcore-10.2.0
+
+# use my own
+export PATH=/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa-0.7.17:$PATH
+
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts
+
+# Set job name, output, and error environment variables
+genomes="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genomes.txt"
+gnames="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genome_names.txt"
+
+threads=$SLURM_CPUS_PER_TASK
+
+genomes_count=$(wc -l < "$genomes")
+
+genome_idx=$((($SLURM_ARRAY_TASK_ID - 1) % $genomes_count + 1))
+
+genome=$(sed -n "${genome_idx}p" "$genomes" | awk '{print $1}')
+gname=$(sed -n "${genome_idx}p" "$gnames" | awk '{print $1}')
+
+# sanity checks
+echo "SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID"
+echo "Genome file: $genome"
+echo "Genome name: $gname"
+
+# create index
+bwa index $genome;
+
+# create file that maps the task ID to the genome and sequence names
+gname=$(sed -n "${genome_idx}p" /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genome_names.txt | awk '{print $1}')
+echo "$SLURM_ARRAY_TASK_ID:$gname" >> /gpfs/ycga/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_index_task_id_mapping.txt
+```
+
+Update logs
+```{bash 1b.bwa_index.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=5G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_indexL
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_index_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_index_%A_%a.ERROR.txt
+
+# go to dir
+cd /gpfs/ycga/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs
+
+# rename the log files
+while IFS=: read -r task_id gname; do
+  for ext in o.txt ERROR.txt; do
+    for old_file in bwa_index_*_${task_id}.${ext}; do
+      if [ -e "$old_file" ]; then
+        new_file="bwa_index_${gname}.${ext}"
+        mv "$old_file" "$new_file"
+      fi
+    done
+  done
+done < "bwa_index_task_id_mapping.txt"
+```
+
+Job wrapper for bwa index jobs
+```{bash 1.bwa_index.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=1G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_indexW
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_wrapper_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_wrapper_%A_%a.ERROR.txt
+
+# go to dir
+cd /gpfs/ycga/project/caccone/lvc26/probes/aegypti/scripts
+
+# Submit job 1a
+job_A_id=$(sbatch 1a.bwa_index.sh | awk '{print $4}')
+
+# Submit job 1b with a dependency on the successful completion of job 1a
+job_B_id=$(sbatch --dependency=afterok:${job_A_id} 1b.bwa_index.sh | awk '{print $4}')
+```
+
+
+We can write a function to save the chunks
+```{r function_save_chunks, warning=FALSE}
+# Define a custom function to write the content of the chunk with the specified label
+write_chunk <- function(rmd_file_path, label, output_directory, script_name) {
+  # Read the Rmd file
+  rmd_lines <- readLines(rmd_file_path)
+  
+  # Find the line numbers of the chunk start and end
+  start_line <- grep(paste0("```\\{bash ", label), rmd_lines)
+  end_line <- grep("```", rmd_lines[(start_line + 1):length(rmd_lines)]) + start_line
+  
+  # Extract the content of the chunk
+  chunk_content <- rmd_lines[(start_line + 1):(end_line - 1)]
+  
+  # Save the content of the chunk to a file
+  file_path <- file.path(output_directory, script_name)
+  cat(chunk_content, sep = "\n", file = file_path)
+  message("Bash script saved as: ", file_path)
+}
+
+# we can save the function to source it later
+dump(
+  "write_chunk",
+  here(
+    "scripts", "analysis", "write_chunk.R")
+)
+```
+
+Now we can save the bash chunks. Save the RMarkdown before run this code below
+```{r save_chunk_1, warning=FALSE}
+# Set the R Markdown file path
+rmd_file_path <- "scripts/RMarkdown_files/02.mapping_probes.Rmd"
+
+# Set the output directory
+output_directory <- "output/probes/scripts"
+
+# Write the content of the chunk with the specified label
+write_chunk(rmd_file_path, "1a.bwa_index.sh", output_directory, "1a.bwa_index.sh")
+write_chunk(rmd_file_path, "1b.bwa_index.sh", output_directory, "1b.bwa_index.sh")
+write_chunk(rmd_file_path, "1.bwa_index.sh", output_directory, "1.bwa_index.sh")
+```
+
+## 4. Mapping probe sequences with BWA on the cluster
+
+We will use the HPC cluster to speed up our alignments.
+
+### 4.1 Map with the default parameters (BWA MEM)
+
+Note that we will not use the flags -k 30 -O 6 -E 1 -B 4 as when we did our test but use the default parameters: 
+-k 23 -A 1 -B 4 -O 6 -E 1 -L 0
+Explanation:
+-k 23: This sets the length of the seed for BWA to 23, which is the default value. You can adjust this parameter if necessary to increase sensitivity or speed.
+-A 1: This sets the matching score for BWA to 1
+-B 4: This sets the mismatch penalty for BWA to 4
+-O 6: This sets the gap open penalty for BWA to 6
+-E 1: This sets the gap extension penalty for BWA to 1
+-L 5: This sets the penalty for clipping for BWA to 0
+
+Default parameters batch script - NOTE: I run the bwa with different seeds and use the flag -a to report all the alignments. I kept this part to show how I did step by step.
+```{bash 3a.bwa_default_mapping.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem-per-cpu=5G
+#SBATCH --time=12:00:00
+#SBATCH --array=1-18
+#SBATCH --job-name=bwa_default
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_default_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_default_%A_%a.ERROR.txt
+
+# load modules
+module load BWA/0.7.17-GCCcore-10.2.0
+module load SAMtools/1.16-GCCcore-10.2.0
+
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts
+
+# Set job name, output, and error environment variables
+genomes="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genomes.txt"
+gnames="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genome_names.txt"
+sequences="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/sequences.txt"
+snames="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/sequence_names.txt"
+
+threads=$SLURM_CPUS_PER_TASK
+
+genomes_count=$(wc -l < "$genomes")
+sequences_count=$(wc -l < "$sequences")
+
+genome_idx=$((($SLURM_ARRAY_TASK_ID - 1) % $genomes_count + 1))
+sequence_idx=$((($SLURM_ARRAY_TASK_ID - 1) / $genomes_count + 1))
+
+genome=$(sed -n "${genome_idx}p" "$genomes" | awk '{print $1}')
+gname=$(sed -n "${genome_idx}p" "$gnames" | awk '{print $1}')
+sequence=$(sed -n "${sequence_idx}p" "$sequences" |  awk '{print $1}')
+sname=$(sed -n "${sequence_idx}p" "$snames" | awk '{print $1}')
+
+# sanity checks
+echo "SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID"
+echo "Genome file: $genome"
+echo "Genome name: $gname"
+echo "Sequence file: $sequence"
+echo "Sequence name: $sname"
+
+# set output directory
+output_dir="/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_crams/"
+
+# map with bwa mem, convert to cram, sort, and index cram files
+bwa mem -t 10 -a $genome $sequence | samtools view -@ 10 -C -T $genome - | samtools sort -m 1G -@ 10 -O CRAM -o $output_dir$gname\.$sname\.cram - && samtools index $output_dir$gname\.$sname\.cram
+
+# create file that maps the task ID to the genome and sequence names
+gname=$(sed -n "${genome_idx}p" /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/genome_names.txt | awk '{print $1}')
+sname=$(sed -n "${sequence_idx}p" /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/sequence_names.txt | awk '{print $1}')
+echo "$SLURM_ARRAY_TASK_ID:$gname:$sname" >> /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_default_task_id_mapping.txt
+```
+
+Update logs
+```{bash 3b.bwa_default_logs.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=5G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_defaultL
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultL_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_default_L%A_%a.ERROR.txt
+
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs
+
+# rename the log files
+while IFS=: read -r task_id gname sname; do
+  for ext in o.txt ERROR.txt; do
+    for old_file in bwa_default_*_${task_id}.${ext}; do
+      if [ -e "$old_file" ]; then
+        new_file="bwa_default_${gname}_${sname}.${ext}"
+        mv "$old_file" "$new_file"
+      fi
+    done
+  done
+done < "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_default_task_id_mapping.txt"
+```
+
+Parse the results
+This batch script works but it takes around 3 hours to parse 18 cram files. I used a different approach below to use a job array and make it faster. It will be helpful when we test seeds and other parameters.
+```{bash loop.bwa_default.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem-per-cpu=4G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_parse
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parse_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parse_%A_%a.ERROR.txt
+
+# load Samtools
+module load SAMtools/1.16-GCCcore-10.2.0
+# export LD_LIBRARY_PATH=/gpfs/ycga/project/caccone/lvc26/probes/ncurses-6.3/lib:$LD_LIBRARY_PATH
+# export PATH=/gpfs/ycga/project/caccone/lvc26/probes/ncurses-6.3:$PATH
+# export PATH=/ycga-gpfs/project/caccone/lvc26/probes/samtools-1.13:$PATH
+
+
+# updated script to run on the HPC
+# go to dir
+cd /gpfs/ycga/project/caccone/lvc26/probes
+
+# create dir if it does not exist
+mkdir -p /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results
+
+# Remove the existing results.txt file if it exists
+rm -f /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results.txt
+
+# loop through the BAM files and extract the required information
+for cram in /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_crams/*.cram
+do
+    # get the name of the BAM file
+    file_name=$(basename "$cram" .cram)
+    
+    # count reads with zero mismatches
+    zero_mismatch_count=$(samtools view -@ 10 -q 30 "$cram" | awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+$/) { print } }' | wc -l)
+    # explanation:
+    # this code calculates the number of reads with zero mismatches and a mapping quality of 30 or higher in a BAM file. Here's a step-by-step explanation:
+    # samtools view -q 30 "$bam": This command filters the input BAM file ($bam) for alignments with a mapping quality of 30 or higher.
+    # awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+$/) { print } }': This AWK script processes the output of the previous samtools view command. It iterates through each field (column) of each line (alignment) and extracts the MD:Z tag value (which contains information about the mismatches in the alignment). Then, it checks if the MD:Z tag value contains only numbers, which indicates that there are no mismatches.
+    # wc -l: This command counts the number of lines in the output, which corresponds to the number of reads with zero mismatches and a mapping quality of 30 or higher.
+
+    # count reads with 1 mismatch
+    one_mismatch_count=$(samtools view -@ 10 -q 30 "$cram" | awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+[ACTG][0-9]*$/) { print } }' | wc -l)
+    
+    # this code calculates the number of reads with exactly one mismatch and a mapping quality of 30 or higher in a BAM file. Here's the awk code explanation:
+    # awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+[ACTG^][0-9]+$/) { print } }': This AWK script processes the output of the previous samtools view command. It iterates through each field (column) of each line (alignment) and extracts the MD:Z tag value (which contains information about the mismatches in the alignment). Then, it checks if the MD:Z tag value matches the regular expression ^MD:Z:[0-9]+[ACTG^][0-9]+$, which indicates that there is exactly one mismatch (represented by a single base or a caret ^ followed by a reference base).
+    
+    # count reads with mapping quality > 30
+    high_quality_count=$(samtools view -@ 10 -q 30 "$cram" | wc -l)
+    # This code calculates the number of reads with a mapping quality of 30 or higher in a BAM file.
+    
+    # count reads with unique mapping
+    unique_count=$(samtools view -@ 10 -q 30 "$cram" | awk '{ if (!and($2, 0x100) && !and($2, 0x800) && !and($2, 0x400)) { if ($1 in seen) { next } else { seen[$1] = 1; count++ } } } END { print count }')
+    # This code calculates the number of unique alignments (non-secondary, non-supplementary) with a mapping quality of 30 or higher in a BAM file.
+    
+    # count unique algnments with zero mismatches
+    unique_count_no_mismatches=$(samtools view -@ 10 -F 384 -q 30 "$cram" | awk '{ if ($6 !~ /^[0-9]+M$/) { next } } { if ($1 in seen) { next } else { seen[$1] = 1; mdtag=""; for (i=12; i<=NF; i++) { if ($i ~ /^MD:Z:/) { mdtag=$i } } if (mdtag == "" || mdtag ~ /^MD:Z:[0-9]+$/) { print $1; next } } }' | sort | uniq | wc -l)
+    # explanation
+    # The awk script processes each alignment and checks several conditions:
+         # !and($2,0x100): This condition checks that the alignment is not a secondary alignment (FLAG 0x100).
+         # $2 !~ /N/ && $2 !~ /D/ && $2 !~ /I/ && $2 !~ /S/: These conditions ensure that the alignment is not an N, D, I, or S alignment (different types of gaps in the CIGAR string).
+         # !and($2,0x800) && !and($2,0x400): These conditions check that the alignment is not a supplementary alignment (FLAG 0x800) and not a PCR/optical duplicate (FLAG 0x400).
+         # if the alignment passes all the conditions, the script checks whether the read ID ($1) is already in the seen array. If it is, it skips the current alignment; otherwise, it adds the read ID to the seen array and increments the count variable.
+    # at the end of the script, the count variable is printed, which is the number of unique alignments with a mapping quality of 30 or higher.
+
+    # count reads with multiple mappings
+    multiple_count=$(samtools view -@ 10 -F 0x900 "$cram" | awk '$5 < 20 {print}' | wc -l)
+    # this code calculates the number of multiple mappings with a mapping quality lower than 20 in a BAM file.
+    # the awk script processes each alignment and checks the following condition:
+        # $5 < 20: This condition checks that the mapping quality of the alignment is lower than 20.
+        # if the alignment passes the condition, the script prints the current line.
+        
+    # Count reads with secondary alignments
+    secondary_count=$(samtools view -@ 10 "$cram" |  awk '$2 == 256' | wc -l) # a value of 256 indicates that the alignment is a secondary alignment. This awk command, therefore, filters the input and only passes secondary alignment lines to the next step.
+    
+    # Count reads with supplementary alignments:
+    supplementary_count=$(samtools view -@ 10 -f 0x800 -F 0x100 "$cram" | wc -l)
+    # the code above will count the number of supplementary alignments in a BAM file by using the samtools view command with specific flags.
+    # samtools view -f 0x800 -F 0x100 "$cram": Filter the alignments in the BAM file. The -f 0x800 flag selects reads with the supplementary alignment flag set, and the -F 0x100 flag filters out reads with the secondary alignment flag set. This ensures that only supplementary alignments are considered.
+
+    # extract the name, mapping start position, mapping end position, middle position (SNP), strand, mapping quality, etc.
+     echo "Read_Name Ref_Name Start End SNP Strand Mapping_Quality Mismatches Indels" > "bwa_default_results/${file_name}.txt"
+    
+    # this code block processes a BAM file and outputs specific information for each read
+    # find SNP position
+    samtools view -@ 10 "$cram" | awk '{
+    start=$4; end=$4+length($10)-1;
+    snp=start+calculate_snp_position($6, 35);
+    md_tag=""; cigar=$6;
+    strand=and($2, 16) ? "-" : "+";
+    for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } }
+    mismatches=gsub(/[ACGTN^]/, "", md_tag);
+    indels=gsub(/[ID]/, "", cigar);
+    print $1,$3,start,end,snp,strand,$5,mismatches,indels
+}
+function calculate_snp_position(cigar, snp_offset) {
+    num_matched_bases = 0;
+    num_chars = split(cigar, chars, "");
+    current_num = "";
+    for (i = 1; i <= num_chars; ++i) {
+        if (chars[i] ~ /[0-9]/) {
+            current_num = current_num chars[i];
+        } else {
+            if (chars[i] == "M") {
+                num_matched_bases += strtonum(current_num);
+                if (num_matched_bases >= snp_offset) {
+                    return snp_offset - (num_matched_bases - strtonum(current_num));
+                }
+            }
+            current_num = "";
+        }
+    }
+    return snp_offset;
+}' >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${file_name}.txt"
+
+    # awk '{...}': Process each line of the SAM file using the awk programming language.
+    # start=$4; end=$4+length($10)-1;: Calculate the start and end positions of the alignment based on the reference sequence.
+    # snp=start+calculate_snp_position($6, 35);: Calculate the position of the SNP (single nucleotide polymorphism) at a given offset (35 in this case) from the start of the alignment.
+    # md_tag=""; cigar=$6;: Initialize the MD tag and retrieve the CIGAR string.
+    # strand=and($2, 16) ? "-" : "+";: Determine the strand of the alignment based on the bitwise flag.
+    # for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } }: Loop through the fields and find the MD tag.
+    # mismatches=gsub(/[ACGTN^]/, "", md_tag);: Count the number of mismatches in the alignment by removing base characters from the MD tag.
+    # indels=gsub(/[ID]/, "", cigar);: Count the number of insertions and deletions in the alignment by looking for 'I' and 'D' in the CIGAR string.
+    # print $1,$3,start,end,snp,strand,$5,mismatches,indels: Print the relevant information for each alignment in the specified format.
+    # function calculate_snp_position(cigar, snp_offset) {...}: Define a custom function to calculate the position of the SNP based on the CIGAR string and a given offset.
+    # >> "output/probes/results_cluster/bwa/bwa_default_results/${file_name}.txt": Append the output to a text file with a specific file name.
+
+    # output the results to a file
+    echo "File: $file_name" >> bwa_default_results/bwa_default_results.txt
+    echo "Zero mismatches: $zero_mismatch_count" >> bwa_default_results/bwa_default_results.txt
+    echo "One mismatch: $one_mismatch_count" >> bwa_default_results/bwa_default_results.txt
+    echo "Unique mappings: $unique_count" >> bwa_default_results/bwa_default_results.txt
+    echo "Unique map 0 mismatches: $unique_count_no_mismatches" >> bwa_default_results/bwa_default_results.txt
+    echo "High quality: $high_quality_count" >> bwa_default_results/bwa_default_results.txt
+    echo "Multiple mappings: $multiple_count" >> bwa_default_results/bwa_default_results.txt
+    echo "Secondary alignments: $secondary_count" >> bwa_default_results/bwa_default_results.txt
+    echo "Supplementary alignments: $supplementary_count" >> bwa_default_results/bwa_default_results.txt
+done
+
+# Remove the existing results.txt file if it exists
+rm -f /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_table.txt
+
+# make table
+awk 'BEGIN {print "file\tzero_mismatches\tone_mismatch\tunique_mappings\tunique_map_0_mismatches\thigh_quality\tmultiple_mappings\tsecondary_alignments\tsupplementary_alignments"} {if (NR%9==1) {file=$2} else if (NR%9==2) {zero_mismatches=$3} else if (NR%9==3) {one_mismatch=$3} else if (NR%9==4) {unique_mappings=$3} else if (NR%9==5) {unique_map_0_mismatches=$5} else if (NR%9==6) {high_quality=$3} else if (NR%9==7) {multiple_mappings=$3} else if (NR%9==8) {secondary_alignments=$3} else if (NR%9==0) {supplementary_alignments=$3; print file"\t"zero_mismatches"\t"one_mismatch"\t"unique_mappings"\t"unique_map_0_mismatches"\t"high_quality"\t"multiple_mappings"\t"secondary_alignments"\t"supplementary_alignments}}' /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results.txt > /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_table.txt
+
+# explanation
+# BEGIN {print "file\tzero_mismatches\tone_mismatch\tunique_mappings\tunique_map_0_mismatches\thigh_quality\tmultiple_mappings\tsecondary_alignments\tsupplementary_alignments"}: Before processing the input file, print the header row for the table, which contains the column names.
+# print file"\t"zero_mismatches"\t"one_mismatch"\t"unique_mappings"\t"unique_map_0_mismatches"\t"high_quality"\t"multiple_mappings"\t"secondary_alignments"\t"supplementary_alignments: When the line number modulo 9 is 0, print a row in the table containing the collected values for each column, separated by tab characters (\t).
+# > output/probes/results_cluster/bwa/bwa_results/table.txt: Redirect the output to a new file called table.txt in the specified directory.
+```
+
+Create an analysis script instead of using the loop
+```{bash bwa_analysis_default.sh, eval=FALSE}
+#!/bin/bash
+
+cram=$1
+task_id=$2
+
+# Get the name of the cram file
+file_name=$(basename ${cram} .cram)
+
+# count reads with zero mismatches
+zero_mismatch_count=$(samtools view -@ 10 -q 30 ${cram} | awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+$/) { print } }' | wc -l)
+# count reads with 1 mismatch
+one_mismatch_count=$(samtools view -@ 10 -q 30 ${cram} | awk '{ for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } } } { if (md_tag ~ /^MD:Z:[0-9]+[ACTG][0-9]*$/) { print } }' | wc -l)
+# count reads with mapping quality > 30
+high_quality_count=$(samtools view -@ 10 -q 30 ${cram} | wc -l)
+# count reads with unique mapping
+unique_count=$(samtools view -@ 10 -q 30 ${cram} | awk '{ if (!and($2, 0x100) && !and($2, 0x800) && !and($2, 0x400)) { if ($1 in seen) { next } else { seen[$1] = 1; count++ } } } END { print count }')
+# count unique algnments with zero mismatches
+unique_count_no_mismatches=$(samtools view -@ 10 -F 384 -q 30 ${cram} | awk '{ if ($6 !~ /^[0-9]+M$/) { next } } { if ($1 in seen) { next } else { seen[$1] = 1; mdtag=""; for (i=12; i<=NF; i++) { if ($i ~ /^MD:Z:/) { mdtag=$i } } if (mdtag == "" || mdtag ~ /^MD:Z:[0-9]+$/) { print $1; next } } }' | sort | uniq | wc -l)
+# count reads with multiple mappings
+multiple_count=$(samtools view -@ 10 -F 0x900 ${cram} | awk '$5 < 20 {print}' | wc -l)
+# Count reads with secondary alignments
+secondary_count=$(samtools view -@ 10 ${cram} |  awk '$2 == 256' | wc -l)
+# Count reads with supplementary alignments:
+supplementary_count=$(samtools view -@ 10 -f 0x800 -F 0x100 ${cram} | wc -l)
+# extract the name, mapping start position, mapping end position, middle position (SNP), strand, mapping quality, etc.
+echo "Read_Name Ref_Name Start End SNP Strand Mapping_Quality Mismatches Indels" > "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${file_name}.txt"
+# find SNP position
+samtools view -@ 10 ${cram} | awk '{
+  start=$4; end=$4+length($10)-1;
+  snp=start+calculate_snp_position($6, 35);
+  md_tag=""; cigar=$6;
+  strand=and($2, 16) ? "-" : "+";
+  for (i=1; i<=NF; i++) { if ($i ~ /^MD:Z:/) { md_tag=$i } }
+  mismatches=gsub(/[ACGTN^]/, "", md_tag);
+  indels=gsub(/[ID]/, "", cigar);
+  print $1,$3,start,end,snp,strand,$5,mismatches,indels
+}
+function calculate_snp_position(cigar, snp_offset) {
+  num_matched_bases = 0;
+  num_chars = split(cigar, chars, "");
+  current_num = "";
+  for (i = 1; i <= num_chars; ++i) {
+      if (chars[i] ~ /[0-9]/) {
+          current_num = current_num chars[i];
+      } else {
+          if (chars[i] == "M") {
+              num_matched_bases += strtonum(current_num);
+              if (num_matched_bases >= snp_offset) {
+                  return snp_offset - (num_matched_bases - strtonum(current_num));
+              }
+          }
+          current_num = "";
+      }
+  }
+  return snp_offset;
+}' >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${file_name}.txt"
+
+# output the results to a file
+echo "File: $file_name" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Zero mismatches: $zero_mismatch_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "One mismatch: $one_mismatch_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Unique mappings: $unique_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Unique map 0 mismatches: $unique_count_no_mismatches" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "High quality: $high_quality_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Multiple mappings: $multiple_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Secondary alignments: $secondary_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+echo "Supplementary alignments: $supplementary_count" >> "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/${task_id}_bwa_default_results.txt"
+```
+
+Create a submission script
+Note: if you change --cpus-per-task=10, you need to update bwa_analysis_default.sh (samtools view -@ 10)
+```{bash 3c.bwa_default_parse_crams.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem-per-cpu=1G
+#SBATCH --time=12:00:00
+#SBATCH --array=1-18
+#SBATCH --job-name=bwa_parseA
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parseA_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parseA_%A_%a.ERROR.txt
+
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts
+
+# load Samtools
+module load SAMtools/1.16-GCCcore-10.2.0
+
+crams=(/gpfs/ycga/project/caccone/lvc26/probes/aegypti/bwa_default_crams/*.cram)
+cram=${crams[$SLURM_ARRAY_TASK_ID - 1]}
+file_name=$(basename "${cram}" .cram)
+
+# Add the task_id and cram name to the log file
+echo "${SLURM_ARRAY_TASK_ID}:${file_name}" >> /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultA_task_id_mapping.txt
+
+# make parsing script executable
+chmod u+x /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_analysis_default.sh
+
+# run the parsing script for each cram file
+/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_analysis_default.sh "${cram}" "${SLURM_ARRAY_TASK_ID}"
+```
+
+Update the parsing logs
+```{bash 3d.bwa_default_update_parse_logs.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=5G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_defaultL
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultAL_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultAL_%A_%a.ERROR.txt
+
+# go to dir
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs
+
+# rename the log files
+while IFS=: read -r task_id cram_name; do
+  for ext in o.txt ERROR.txt; do
+    for old_file in bwa_parseA_*_${task_id}.${ext}; do
+      if [ -e "$old_file" ]; then
+        new_file="bwa_parseA_${cram_name}.${ext}"
+        mv "$old_file" "$new_file"
+      fi
+    done
+  done
+done < "/ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultA_task_id_mapping.txt"
+```
+
+Now we can join all the outputs and create a table
+```{bash 3e.bwa_default_join_results.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=10G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_combine
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parseC_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_parseC_%A_%a.ERROR.txt
+
+cd /ycga-gpfs/project/caccone/lvc26/probes/aegypti
+
+# Remove any previous combined results file
+rm -f /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_combined.txt
+
+# Combine the individual result files into a single file
+for result in /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/*_bwa_default_results.txt; do
+  cat "${result}" >> /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_combined.txt
+  echo "" >> /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_combined.txt
+done
+
+# make a table
+awk 'BEGIN {
+    print "file\tzero_mismatches\tone_mismatch\tunique_mappings\tunique_map_0_mismatches\thigh_quality\tmultiple_mappings\tsecondary_alignments\tsupplementary_alignments"
+}
+/^File:/ {file = $2}
+/^Zero mismatches:/ {zero_mismatches = $3}
+/^One mismatch:/ {one_mismatch = $3}
+/^Unique mappings:/ {unique_mappings = $3}
+/^Unique map 0 mismatches:/ {unique_map_0_mismatches = $5}
+/^High quality:/ {high_quality = $3}
+/^Multiple mappings:/ {multiple_mappings = $3}
+/^Secondary alignments:/ {secondary_alignments = $3}
+/^Supplementary alignments:/ {
+    supplementary_alignments = $3
+    print file"\t"zero_mismatches"\t"one_mismatch"\t"unique_mappings"\t"unique_map_0_mismatches"\t"high_quality"\t"multiple_mappings"\t"secondary_alignments"\t"supplementary_alignments
+}' /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_combined.txt > /ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/bwa_default_results_table.txt
+```
+
+Job wrapper
+```{bash 3.bwa_default.sh, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=day
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem-per-cpu=1G
+#SBATCH --time=12:00:00
+#SBATCH --job-name=bwa_defaultW
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultW_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/probes/aegypti/scripts/bwa_logs/bwa_defaultW_%A_%a.ERROR.txt
+
+# go to dir
+cd /gpfs/ycga/project/caccone/lvc26/probes/aegypti/scripts
+
+# Submit job 3a
+job_A_id=$(sbatch 3a.bwa_default_mapping.sh | awk '{print $4}')
+
+# Submit job 3b with a dependency on the successful completion of job 3a
+job_B_id=$(sbatch --dependency=afterok:${job_A_id} 3b.bwa_default_logs.sh | awk '{print $4}')
+
+# Submit job 3c with a dependency on the successful completion of job 3b
+job_C_id=$(sbatch --dependency=afterok:${job_B_id} 3c.bwa_default_parse_crams.sh | awk '{print $4}')
+
+# Submit job 3d with a dependency on the successful completion of job 3c
+job_D_id=$(sbatch --dependency=afterok:${job_C_id} 3d.bwa_default_update_parse_logs.sh | awk '{print $4}')
+
+# Submit job 3e with a dependency on the successful completion of job 3d
+sbatch --dependency=afterok:${job_D_id} 3e.bwa_default_join_results.sh
+```
+
+Save the batch scripts 
+```{r save_chunks_bwa_default, warning=FALSE}
+# save the changes before running the code below
+
+# Set the R Markdown file path
+rmd_file_path <- "scripts/RMarkdown_files/02.mapping_probes.Rmd"
+
+# Set the output directory
+output_directory <- "output/probes/scripts"
+
+
+# source function to write chunks
+source(
+  here(
+    "scripts", "analysis", "write_chunk.R")
+)
+
+# Write the content of the chunk with the specified label
+write_chunk(rmd_file_path, "3a.bwa_default_mapping.sh", output_directory, "3a.bwa_default_mapping.sh")
+write_chunk(rmd_file_path, "3b.bwa_default_logs.sh", output_directory, "3b.bwa_default_logs.sh")
+write_chunk(rmd_file_path, "3c.bwa_default_parse_crams.sh", output_directory, "3c.bwa_default_parse_crams.sh")
+write_chunk(rmd_file_path, "3d.bwa_default_update_parse_logs.sh", output_directory, "3d.bwa_default_update_parse_logs.sh")
+write_chunk(rmd_file_path, "3e.bwa_default_join_results.sh", output_directory, "3e.bwa_default_join_results.sh")
+write_chunk(rmd_file_path, "bwa_analysis_default.sh", output_directory, "bwa_analysis_default.sh")
+write_chunk(rmd_file_path, "3.bwa_default.sh", output_directory, "3.bwa_default.sh")
+```
+
+Transfer files to cluster
+```{bash transfer_scripts_cluster4, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster.
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/scripts lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti
+```
+
+Submit jobs
+```{bash submit_batch_job_bwa_default, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/probes/aegypti/scripts;
+sbatch 3.bwa_default.sh;
+```
+
+Check job progress
+```{bash check_job2, eval=FALSE}
+sacct -j 5768032 --format=JobID,JobName,Partition,AllocCPUS,State,ExitCode,Start,End,Elapsed,UserCPU,SystemCPU,TotalCPU,MaxRSS
+```
+
+
+#### 4.1.1 Inspect the alignments
+
+Create dir 
+```{r create_output_dir_for_cluster_results, eval=FALSE}
+# create output directories 
+dir_names <- c(
+  "results_cluster/bwa",
+  "results_cluster/bwa/bwa_default_crams",
+  "results_cluster/bwa/bwa_default_results",
+)
+
+for (dir_name in dir_names) {
+  here("output", "probes", dir_name) |>
+    dir.create(recursive = TRUE, showWarnings = FALSE)
+}
+```
+
+Download files from cluster
+I did not download it because it is 2Gb and I am running out of space in my laptop. I wil download it once it is all ready for publication.
+```{bash transfer_genomes_cluster03, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster
+# crams
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_crams/ /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/results_cluster/bwa
+```
+
+I will create interactive session on the cluster and load Samtools
+```{bash create_interactive_session_load_samtools, eval=FALSE }
+# create interactive session with 1 CPU
+salloc --partition devel --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=10Gb zsh
+
+# load samtools
+module load SAMtools/1.16-GCCcore-10.2.0
+```
+
+Check the first 10 alignments
+```{bash, check_10_alignments, eval=FALSE}
+# on the cluster
+samtools view /gpfs/ycga/project/caccone/lvc26/probes/aegypti/bwa_default_crams/AaegL5_ncbi.aegypti_A.cram 2>&1 | head -n 10
+# AX-93255735_R	256	1	1253	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35G35	AS:i:66
+# AX-93255735_F	272	1	1253	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35G35	AS:i:66
+# AX-93236051_R	0	1	9935	0	71M	*	0	0	TCCAAAACTCACCACGCTAGAAAGCTTAGAAGCAGATTGGAAAATAAACACCACATTGATTCCCTGCGAAA	*	AS:i:66	XS:i:66	MD:Z:35G35	NM:i:1
+# AX-93236051_F	16	1	9935	0	71M	*	0	0	TCCAAAACTCACCACGCTAGAAAGCTTAGAAGCAGATTGGAAAATAAACACCACATTGATTCCCTGCGAAA	*	AS:i:66	XS:i:66	MD:Z:35G35	NM:i:1
+# AX-93255736_R	256	1	10972	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35C35	AS:i:66
+# AX-93255736_F	16	1	10972	0	71M	*	0	0	AGCACTAGCATGGCGGTATCCGCACAGAAGTCAAATGACCAGCAGCAGGAGGACCTCAAAAAGCAACATGC	*	AS:i:66	XS:i:66	MD:Z:35C35	NM:i:1
+# AX-93255735_R	256	1	12637	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35G35	AS:i:66
+# AX-93255735_F	272	1	12637	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35G35	AS:i:66
+# AX-93255734_R	0	1	31979	60	71M	*	0	0	TCAGTTCTTAGCCAAAATGTGCCTTGTGTTGGTTGTCGCAGAAGTGTTGAGCGATTATTTTATCAATTGAT	*	AS:i:71	XS:i:0	MD:Z:71	NM:i:0
+# AX-93255734_F	16	1	31979	60	71M	*	0	0	TCAGTTCTTAGCCAAAATGTGCCTTGTGTTGGTTGTCGCAGAAGTGTTGAGCGATTATTTTATCAATTGAT	*	AS:i:71	XS:i:0	MD:Z:71	NM:i:0
+```
+
+Check a cram file to see the quality scores
+```{bash check_alignments_interval, eval=FALSE}
+# on the cluster
+# SNP = AX-585090020
+# chromosome = "1"
+# start_position = 22827
+# end_position = 22898
+samtools view /gpfs/ycga/project/caccone/lvc26/probes/aegypti/bwa_default_crams/AaegL5_ncbi.aegypti_A.cram 1:10972-11972
+# AX-93255736_R	256	1	10972	0	71M	*	0	0	*	*	NM:i:1	MD:Z:35C35	AS:i:66
+# AX-93255736_F	16	1	10972	0	71M	*	0	0	AGCACTAGCATGGCGGTATCCGCACAGAAGTCAAATGACCAGCAGCAGGAGGACCTCAAAAAGCAACATGC	*	AS:i:66	XS:i:66	MD:Z:35C35	NM:i:1
+```
+
+Explanation of the alignment flags
+
+Each line represents a single read, and the fields are tab-separated. Here's a breakdown of the fields in each line:
+
+AX-93255736_R  256 1 10972 0 71M * 0 0 * * NM:i:1 MD:Z:35C35 AS:i:66
+- Query template NAME: AX-93255736_R
+- FLAG value: 256 (read is not primary)
+- Reference sequence ID (chromosome): 1
+- Alignment start position: 10972
+- Mapping quality score: 0
+- CIGAR string: 71M (71 matched bases)
+- No information about mate
+- Edit distance to reference: 1 mismatch (NM:i:1)
+- Mismatching positions: a mismatch after 35 bases (MD:Z:35C35)
+- Alignment score: 66 (AS:i:66)
+
+AX-93255736_F  16 1 10972 0 71M * 0 0 AGCACTAGCATGGCGGTATCCGCACAGAAGTCAAATGACCAGCAGCAGGAGGACCTCAAAAAGCAACATGC * AS:i:66 XS:i:66 MD:Z:35C35 NM:i:1
+- Query template NAME: AX-93255736_F
+- FLAG value: 16 (read is mapped and aligned in forward direction)
+- Reference sequence ID (chromosome): 1
+- Alignment start position: 10972
+- Mapping quality score: 0
+- CIGAR string: 71M (71 matched bases)
+- Sequence: AGCACTAGCATGGCGGTATCCGCACAGAAGTCAAATGACCAGCAGCAGGAGGACCTCAAAAAGCAACATGC
+- No quality score information
+- Alignment score: 66 (AS:i:66)
+- Suboptimal alignment score: 66 (XS:i:66)
+- Mismatching positions: a mismatch after 35 bases (MD:Z:35C35)
+- Edit distance to reference: 1 mismatch (NM:i:1)
+
+I have foward and reverse sequences in one file but they are not paired.
+
+
+#### 4.1.2 Import bwa summary results 
+
+The directory bwa_default_results on the cluster is 2.4G, I will download only the table with the results. Later, I will download everything.
+```{bash download_bwa_default_results_from_cluster, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/probes/aegypti/bwa_default_results/ /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/probes/results_cluster/bwa/bwa_default_results
+```
+
+Import summary results of BWA mapping
+```{r import_parsed_bwa_table}
+# import data, create new columns, and sort
+df_bwa_default <-
+  read_delim(
+    here(
+      "output", "probes", "results_cluster", "bwa", "bwa_default_results", "bwa_default_results_table.txt"
+    ),
+    delim = "\t",
+    col_names = TRUE,
+    show_col_types = FALSE
+  )|>
+  separate(file, c("genome", "sequence"), sep = "\\.") |>
+  relocate(high_quality, .after = sequence)
+
+# check the result
+head(df_bwa_default)
+```
+
+The results for both genomes are the same. We can keep only one.
+
+```{r AaegL5_bwa_default}
+# albopictus chip
+AaegL5_ncbi_bwa_default <-
+  df_bwa_default |>
+  filter(str_detect(genome, "^AaegL5_ncbi")) 
+
+AaegL5_ncbi_bwa_default
+```
+
+aegypti_N_F and aegypti_N_R: 34334 probes mapped uniquely with 1 mismatch
+aegypti_A_F: 16981 probes with allele A on the forward direction mapped uniquely without any mismatches, while 19289 mapped with 1 mismatch, so we have some sequences that are matching the reverse strand
+aegypti_B_F: 18024 probes with allele B on the forward direction mapped uniquely without any mismatches, while 18636 mapped with 1 mismatch
+
+We can use the probe sequences with N to find the probe sequence that we can use, they have unique mapping with 1 mismatch.
+
+We know based on the sequences with N, that we have 34334 probe sequences mapping to 1 place in the genome without secondary map. We can find out what SNPs are these and create a new chromosomal scale.
+
+We can make a table and save it
+```{r bwa_default_table2}
+# Create a flextable from the data
+ft_bwa_default_albo <- regulartable(AaegL5_ncbi_bwa_default)
+
+# Export the flextable as a Word document
+doc <- read_docx()
+doc <- body_add_flextable(doc, value = ft_bwa_default_albo)
+print(doc, target = here("output", "probes", "results_cluster", "bwa","bwa_default_results", "albopictus_bwa_default_results_table.docx"))
+
+# Display the flextable in the R Markdown document
+ft_bwa_default_albo
+```
+
+
+Check the results of the mapping.
+```{bash}
+head output/probes/results_cluster/bwa/bwa_default_results/AaegL5_ncbi.aegypti_N_F.txt
+```
+
+We can import the data into R
+
+Mapping results for the probe sequences with the reference allele
+```{r}
+# Load the data into a data table directly using `here` in `fread`
+AaegL5_ncbi.aegypti_N_F <-
+  fread(
+    here(
+      "output",
+      "probes",
+      "results_cluster",
+      "bwa",
+      "bwa_default_results",
+      "AaegL5_ncbi.aegypti_N_F.txt"
+    ),
+    sep = " "
+  )
+
+# Remove the "_F" from the end of the strings in the "Read_Name" column
+AaegL5_ncbi.aegypti_N_F$Read_Name <- sub("_N_F$", "", AaegL5_ncbi.aegypti_N_F$Read_Name)
+
+# # Create a new column "Reference" by appending "_ref" to the "Read_Name" values
+# AalbF2_ref_F[, Reference := paste0(Read_Name, "_ref")]
+
+# Rename the "Reference" column to "SNP_id"
+setnames(AaegL5_ncbi.aegypti_N_F, "Read_Name", "SNP_id")
+
+# Rename the "SNP" column to "Position"
+setnames(AaegL5_ncbi.aegypti_N_F, "SNP", "Position")
+
+head(AaegL5_ncbi.aegypti_N_F)
+```
+
+
+We can check how many SNPs we have with unique mapping with 1 mismatch
+```{r}
+# Here we filter our data to find the SNPs with 1 mismatch (N), with mapping quality equal or above 20 and no indels
+filtered_data <- AaegL5_ncbi.aegypti_N_F[Mismatches == 1 & Indels == 0 & Mapping_Quality >= 20]
+length(filtered_data$SNP_id)
+```
+
+We have 34454 SNPs with unique mapping. Lets check how many SNPs we have per chromosome or scaffolds
+```{r}
+# Group by Ref_Name and count the number of SNP_ids
+snp_count_by_ref <- filtered_data[, .(SNP_Count = .N), by = Ref_Name]
+snp_count_by_ref
+```
+
+We can use only the SNPs on chromosome 1, 2, and 3. 
+
+```{r}
+# Filter by Ref_Name values
+filtered_data <- filtered_data[Ref_Name %in% c(1, 2, 3)]
+snp_count_by_ref <- filtered_data[, .(SNP_Count = .N), by = Ref_Name]
+snp_count_by_ref
+sum(snp_count_by_ref$SNP_Count)
+```
+We have 34284 SNPs on the chromosomes 1, 2, and 3.
+
+Now we can lift the positions of our data to the genome assembly.
+
+Create a bed file. I exported all 50k SNPs for the crosses
+```{bash}
+plink \
+--file data/aegypti_crosses_all_snps_august13_2023 \
+--make-bed \
+--allow-extra-chr \
+--out output/segregation/file3  \
+--silent;
+
+grep "variants" output/segregation/file3.log
+```
+
+
+
+Import the bim file from the crosses
+
+```{r}
+# load the function that we saved earlier
+source(
+  here(
+    "scripts", "analysis", "import_bim.R"
+  ),
+  local = knitr::knit_global()
+)
+
+# import the file
+file3 <- import_bim(
+  here(
+    "output", "segregation", "file3.bim"
+  )
+)
+
+# Convert to data table
+setDT(file3)
+
+# Rename columns
+setnames(file3, "SNP", "SNP_id")
+setnames(file3, "Scaffold", "Scaffold_chip")
+setnames(file3, "Position", "Position_chip")
+
+head(file3)
+```
+Merge the data
+```{r}
+# Merge the data tables based on the "SNP_id" column
+merged_data <- merge(filtered_data, file3, by = "SNP_id")
+head(merged_data)
+```
+
+Select the columns we need
+```{r}
+# Select the columns we need for bim file
+merged_data <- 
+  merged_data |>
+  dplyr::select(
+    Ref_Name, SNP_id, Cm, Position, Allele1, Allele2
+  )
+# check it
+head(merged_data)
+```
+
+Check if there are any duplicated ids and we can remove them
+```{r}
+# Find the duplicated SNP_id
+duplicated_snp_ids <- merged_data[duplicated(SNP_id) | duplicated(SNP_id, fromLast = TRUE)]
+
+# Print the duplicated SNP_ids
+print(duplicated_snp_ids$SNP_id)
+```
+
+
+We can save the SNP ids to file and extract it from file 1
+```{r}
+# Find the unique SNP_id
+unique_snp_ids <- merged_data[!duplicated(SNP_id) & !duplicated(SNP_id, fromLast = TRUE), .(SNP_id)]
+
+# Write the unique SNP_ids to a file
+write.table(
+  unique_snp_ids$SNP_id,
+  file      = here("output", "segregation", "AaegL5_ncbi.txt"),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Now we can create a new file
+```{bash}
+plink \
+--bfile output/segregation/file3 \
+--make-bed \
+--extract output/segregation/AaegL5_ncbi.txt \
+--allow-extra-chr \
+--out output/segregation/file4 \
+--silent;
+
+grep "variants" output/segregation/file4.log
+```
+We have the 34276 SNPs with unique mapping. Now we will have to lift the positions and create a new bed file.
+
+Import file4.bim
+```{r}
+# Import the file with explicit column names
+file4 <- fread(
+  here("output", "segregation", "file4.bim"),
+  col.names = c("Scaffold", "SNP_id", "Cm", "Position_chip", "Allele1", "Allele2")
+)
+
+head(file4)
+```
+
+We have to merge it again
+```{r}
+# Merge the data tables based on the "SNP_id" column
+merged_data2 <- merge(filtered_data, file4, by = "SNP_id")
+head(merged_data2)
+```
+
+We can create a file with the SNP_id, chromosome, and position
+```{r}
+snps_pos <- filtered_data |>
+  dplyr::select(
+    SNP_id, Ref_Name, Position
+  ) |>
+  dplyr::rename(
+    Chromosome = 2
+  )
+
+
+# # Write the unique SNP_ids to a file
+write.table(
+  snps_pos,
+  file      = here("output", "segregation", "snp_pos_AaegL5.txt"),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = TRUE,
+  quote     = FALSE
+)
+```
+
+Merge it
+```{r}
+# Select the columns we need for bim file
+merged_data2 <- 
+  merged_data2 |>
+  dplyr::select(
+    Ref_Name, SNP_id, Cm, Position, Allele1, Allele2
+  )
+# check it
+head(merged_data2)
+```
+
+We need to set the SNP order to match the file 8 because the of the encoding of the files
+```{r}
+# Merge the data and keep the order based on SNP_id in file8
+merged_data_ordered <- merge(file4, merged_data2, by = "SNP_id", sort = FALSE)
+
+# Select the columns we need for bim file
+merged_data_ordered <- 
+  merged_data_ordered |>
+  dplyr::select(
+    Ref_Name, SNP_id, Cm.x, Position, Allele1.x, Allele2.x
+  )
+
+# Show the first few rows of the merged data
+head(merged_data_ordered)
+```
+
+Check if the order of the SNP match the file3.bim
+```{bash}
+head output/segregation/file4.bim
+```
+
+Save the new .bim file
+
+```{r save_new_bim_file}
+write.table(
+  merged_data_ordered,
+  file      = here(
+    "output", "segregation", "file4B.bim"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Rename the .bim files
+
+```{bash}
+# change the name of the first .bim file, for example, append _backup.bim, and then replace the original file
+mv output/segregation/file4.bim output/segregation/file4_backup.bim;
+# than change the new bim we create to the original name (do it only once, otherwise it will mess up)
+mv output/segregation/file4B.bim output/segregation/file4.bim
+```
+
+
+Create a new bed file with Plink to see if it works. For example, to see if the variants are in the
+right order.
+
+```{bash test_new_scale}
+plink \
+--keep-allele-order \
+--bfile output/segregation/file4 \
+--make-bed \
+--allow-extra-chr \
+--out output/segregation/file5;
+```
+
+
+Check the new bim file
+```{bash}
+head output/segregation/file5.bim
+```
+
+We do not have some of the alleles because we exported all 50k SNPs, and not the recommended SNPs.
+
+
+## 5. Plot SNP density
+
+After quality control with approximately 60k SNPs
+
+```{r import_qc_data_for_density_plot, warning=FALSE}
+# import the file
+snp_den_qc <- import_bim(
+  here(
+    "output", "segregation", "file5.bim"
+  )
+)
+```
+
+Make plot of the SNP density
+
+```{r make_density_plot_qc_data}
+#   ____________________________________________________________________________
+#   plot SNP density after QC                                               ####
+snp_den_qc |>
+  dplyr::rename(
+    Chromosome = 1
+  ) |>
+  mutate(
+    Position           = as.numeric(
+      Position
+    )
+  ) |>
+  ggplot(
+    aes(
+      x                = Position
+    ),
+    label              = sprintf(
+      "%0.2f",
+      round(
+        a,
+        digits         = 0
+      )
+    )
+  ) +
+  geom_histogram(
+    aes(
+      y                = after_stat(
+        count
+      )
+    ),
+    binwidth           = 1e6
+  ) +
+  facet_wrap(
+    vars(
+      Chromosome
+    ),
+    scales             = "free_x"
+  ) +
+  labs(
+    title              = "SNP Density after QC",
+    x                  = expression(
+      "Position in the genome (Mb)"
+    ),
+    y                  = expression(
+      "Number of SNPs"
+    )
+  ) +
+  scale_x_continuous(
+    labels             = function(x) {
+      format(
+        x / 1e6,
+        big.mark       = ",", 
+        scientific     = FALSE
+      )
+    }
+  ) +
+  geom_density(
+  aes(
+    y = 1e6 * after_stat(count)
+  ),
+  color = "red",
+  linewidth = .75,
+  alpha = .4,
+  fill = "pink"
+  ) +
+  hrbrthemes::theme_ipsum(
+    base_family        = "",
+    axis_text_size     = 12,
+    axis_title_size    = 14,
+    plot_margin        = margin(
+      10, 10, 10, 10
+    ),
+    grid               = TRUE,
+    grid_col           = "#fabbe2"
+  ) +
+  theme(
+    panel.grid.major   = element_line(
+      linetype         = "dashed",
+      linewidth        = 0.2
+    ),
+    panel.grid.minor   = element_line(
+      linetype         = "dashed",
+      linewidth        = 0.2
+    ),
+    panel.spacing      = unit(0.5, "lines"),
+    strip.text         = element_text(
+      face             = "bold", hjust = .5
+    ),
+    strip.background.x = element_rect(
+      color            = "gray"
+    )
+  )
+#   ____________________________________________________________________________
+#   save the density plot                                            ####
+ggsave(
+  here(
+    "output", "segregation","figures", "snp_density_after_mapping.pdf"
+  ),
+  width  = 10,
+  height = 6,
+  units  = "in"
+)
+```
+
+SNPs per chromosome
+
+```{r SNPs_per_chro}
+# we can use dplyr "count" to get the number of SNPs for each chromosome
+# lets get the data we need
+snps_per_chrm <- 
+  snp_den_qc |>
+  count(
+    Scaffold) |>
+  dplyr::rename(
+    Chromosome = 1,
+    "SNPs (N) " = 2
+  )
+
+# Create the flextable
+ft <- flextable::flextable(snps_per_chrm)
+
+# Apply zebra theme
+ft <- flextable::theme_zebra(ft)
+
+# Add a caption to the table
+ft <- flextable::add_header_lines(ft, "SNPs per chromosome after mapping")
+ft
+```
+
+
+We can get the mean number of SNPs per chromosome or the entire genome
+
+```{r SNPs_per_1Mb_window}
+# we first use dplyr cut_width to get the number of SNPs per 1Mb window
+albo_den <- 
+  snp_den_qc |>
+  dplyr::select(
+    Scaffold, Position
+  ) |>
+  group_by(
+    Scaffold,
+    windows               = cut_width(
+      Position,
+      width               = 1e6,
+      boundary            = 0
+    )
+  ) |>
+  summarise(
+    n                     = n(),
+    .groups               = "keep"
+  ) |>
+  group_by(
+    Scaffold
+  ) |>
+  summarise(
+    mean                  = mean(n),
+    n                     = n(),
+    .groups               = "keep"
+  ) |>
+  dplyr::rename(
+    Chromosome            = 1,
+    "SNPs per 1Mb window" = 2,
+    "Number of windows"   = 3
+  )
+#
+# check the results
+snp_table <-
+  flextable(
+    albo_den
+  )
+snp_table <- colformat_double(
+  x        = snp_table,
+  big.mark = ",",
+  digits   = 2,
+  na_str   = "N/A"
+)
+snp_table
+```
+
+Merge objects
+
+```{r merge_obj}
+# we can merge the two data sets we created above into one table
+after_qc <-
+  snps_per_chrm |>
+  left_join(
+    albo_den,
+    by = "Chromosome"
+  )
+snp_table2 <- flextable(
+  after_qc)
+snp_table2 <- colformat_double(
+  x        = snp_table2,
+  big.mark = ",",
+  digits   = 2, 
+  na_str   = "N/A"
+  )
+snp_table2
+```
+
+## 6. Update crosses files
+
+Now we can update the data from the crosses but use only the SNPs that we have data for. I create a file with only the SNPs that are polymorphic.
+```{bash}
+# If you run this chunk you will have to open the file.fam in a text editor and set parents id and sex of each individual. I fix it using bash tools. You can start on the next chunk if you do not want to have to repeat what I did.
+# we also check if the reference genome and the reference alleles match.
+plink \
+--allow-extra-chr \
+--file data/aegypti_crosses_poly_nominor_august13_2023 \
+--make-bed \
+--extract output/segregation/AaegL5_ncbi.txt \
+--out output/segregation/file1 \
+--silent;
+
+grep "variants" output/segregation/file1.log
+```
+
+We have data for 18002 SNPs, now we can lift their position to the current genome
+
+Check the bim file
+```{bash}
+head output/segregation/file1.bim
+```
+
+
+Import the bim file from the crosses
+
+```{r}
+# import the file
+file1 <- import_bim(
+  here(
+    "output", "segregation", "file1.bim"
+  )
+)
+
+# Convert to data table
+setDT(file1)
+
+# Rename columns
+setnames(file1, "SNP", "SNP_id")
+setnames(file1, "Scaffold", "Scaffold_chip")
+setnames(file1, "Position", "Position_chip")
+
+head(file1)
+```
+Merge the data
+```{r}
+# Merge the data tables based on the "SNP_id" column
+merged_data3 <- merge(snps_pos, file1, by = "SNP_id")
+head(merged_data3)
+```
+
+Select the columns we need
+```{r}
+# Select the columns we need for bim file
+merged_data4 <- 
+  merged_data3 |>
+  dplyr::select(
+    Chromosome, SNP_id, Cm, Position, Allele1, Allele2
+  )
+# check it
+head(merged_data4)
+```
+
+
+We need to set the SNP order to match the file 8 because the of the encoding of the files
+```{r}
+# Merge the data and keep the order based on SNP_id in file8
+merged_data_ordered2 <- merge(file1, merged_data4, by = "SNP_id", sort = FALSE)
+
+# Select the columns we need for bim file
+merged_data_ordered2 <- 
+  merged_data_ordered2 |>
+  dplyr::select(
+    Chromosome, SNP_id, Cm.x, Position, Allele1.x, Allele2.x
+  )
+
+# Show the first few rows of the merged data
+head(merged_data_ordered2)
+```
+
+
+
+Check if the order of the SNP match the file1.bim
+```{bash}
+head output/segregation/file1.bim
+```
+
+Save the new .bim file
+
+```{r}
+write.table(
+  merged_data_ordered2,
+  file      = here(
+    "output", "segregation", "file1B.bim"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Rename the .bim files
+
+```{bash}
+# change the name of the first .bim file, for example, append _backup.bim, and then replace the original file
+mv output/segregation/file1.bim output/segregation/file1_backup.bim;
+# than change the new bim we create to the original name (do it only once, otherwise it will mess up)
+mv output/segregation/file1B.bim output/segregation/file1.bim
+```
+
+
+Create a new bed file with Plink to see if it works. For example, to see if the variants are in the
+right order
+
+```{bash}
+plink \
+--keep-allele-order \
+--bfile output/segregation/file1 \
+--make-bed \
+--allow-extra-chr \
+--out output/segregation/file2;
+```
+
+
+Check the new bim file
+```{bash}
+head output/segregation/file2.bim
+```
+
+We do not have some of the alleles because we exported all 50k SNPs, and not the recommended SNPs.
+
+Set the reference alleles to match the genome
+```{bash}
+plink2 \
+--bfile output/segregation/file2 \
+--make-bed \
+--fa output/probes/genomes/AaegL5_ncbi.fasta.gz \
+--ref-from-fa 'force' `# sets REF alleles when it can be done unambiguously, we use force to change the alleles` \
+--out output/segregation/file7 \
+--silent;
+# --keep-allele-order \ if you use Plink 1.9
+grep "variants" output/segregation/file7.log; # to get the number of variants from the log file.
+```
+
+
+Check the new bim file
+```{bash}
+head output/segregation/file7.bim
+```
+
+We can see that some SNPs were fixed. For example:
+1	AX-93255706	0	207375	0	A
+Then Plink2 set a . for the 
+1	AX-93255706	0	207375	.	A
+
+We can check the allele from the probes_aegypti_01
+```{r}
+alleles <- probes_aegypti_01 |>
+  dplyr::select(Name, "Allele A", "Allele B")
+
+head(alleles)
+```
+
+Write to file
+```{r}
+# # Write the unique SNP_ids to a file
+write.table(
+  alleles,
+  file      = here("output", "segregation", "alleles.txt"),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Check it
+```{bash}
+head output/segregation/alleles.txt
+```
+
+Import .bim
+```{r}
+# import the file
+file7 <- import_bim(
+  here(
+    "output", "segregation", "file7.bim"
+  )
+)
+
+colnames(file7) <- c("Chromosome", "SNP_ID", "Cm", "Position", "Allele1", "Allele2")
+
+head(file7)
+```
+
+Import alleles
+```{r}
+# Read the alleles file
+alleles_data <- read.table("output/segregation/alleles.txt", header = FALSE)
+colnames(alleles_data) <- c("SNP_ID", "Allele_A", "Allele_B")
+head(alleles_data)
+```
+
+Merge
+```{r}
+# # Merge the data based on SNP_ID
+# merged_data5 <- merge(file7, alleles_data, by = "SNP_ID")
+# Merge the data based on SNP_ID, preserving the order in file7
+merged_data5 <- merge(file7, alleles_data, by = "SNP_ID", all.x = TRUE, sort = FALSE)
+
+head(merged_data5)
+```
+
+Check the SNPs for which the alternative allele is missing
+```{r}
+head(merged_data5 |>
+       filter(Allele1 == "."))
+```
+
+Plink2 set the allele2 as the reference allele
+```{r}
+# Loop through the rows and correct the alleles
+for (i in 1:nrow(merged_data5)) {
+  if (merged_data5$Allele1[i] == ".") {
+    if (merged_data5$Allele2[i] == merged_data5$Allele_B[i]) {
+      # Replace Allele1 with Allele_A if Allele2 matches Allele_B
+      merged_data5$Allele1[i] <- merged_data5$Allele_A[i]
+    } else if (merged_data5$Allele2[i] == merged_data5$Allele_A[i]) {
+      # Replace Allele1 with Allele_B if Allele2 matches Allele_A
+      merged_data5$Allele1[i] <- merged_data5$Allele_B[i]
+    } else {
+      # Print a warning if neither allele matches
+      warning(paste("No match found for SNP_ID", merged_data5$SNP_ID[i]))
+    }
+  }
+}
+
+# Create the corrected .bim file
+corrected_bim <- merged_data5[, c("Chromosome", "SNP_ID", "Cm", "Position", "Allele1", "Allele2")]
+```
+
+Now check if we fixed the problem
+```{r}
+# Check one SNP
+corrected_bim |>
+       filter(SNP_ID == "AX-93214499")
+```
+
+Save the new .bim file
+
+```{r}
+write.table(
+  corrected_bim,
+  file      = here(
+    "output", "segregation", "file7b.bim"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Rename the .bim files
+
+```{bash change_name_bim_file, eval=FALSE}
+# change the name of the first .bim file, for example, append _backup.bim, and then replace the original file
+mv output/segregation/file7.bim output/segregation/file7_backup.bim;
+# than change the new bim we create to the original name (do it only once, otherwise it will mess up)
+mv output/segregation/file7b.bim output/segregation/file7.bim
+```
+
+Now we can check if the alleles are correct
+Import .bim
+```{r}
+# import the file
+file7 <- import_bim(
+  here(
+    "output", "segregation", "file7.bim"
+  )
+)
+
+colnames(file7) <- c("Chromosome", "SNP_ID", "Cm", "Position", "Allele1", "Allele2")
+
+head(file7)
+```
+
+
+Check the SNPs for which the alternative allele is missing
+```{r}
+head(file7 |>
+       filter(Allele1 == "."))
+```
+
+We can repeat the set reference with Plink2
+Set the reference alleles to match the genome
+```{bash}
+plink2 \
+--bfile output/segregation/file7 \
+--make-bed \
+--fa output/probes/genomes/AaegL5_ncbi.fasta.gz \
+--ref-from-fa 'force' `# sets REF alleles when it can be done unambiguously, we use force to change the alleles` \
+--out output/segregation/file8 \
+--silent;
+
+grep "variants" output/segregation/file8.log
+```
+
+Check the .bim file
+```{bash}
+head output/segregation/file8.bim
+```
+
+

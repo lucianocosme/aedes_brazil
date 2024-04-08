@@ -1,0 +1,1903 @@
+---
+title: "Aedes aegypti in Brazil - Quality Control for global samples"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+
+## 1. Getting started: R libraries and software for QC
+
+### 1.1 R libraries and software
+
+```{r libraries, message=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(dplyr)
+library(ggplot2)
+library(colorout)
+library(extrafont)
+library(reticulate)
+library(scales)
+library(stringr)
+library(grid)
+library(flextable)
+library(devtools)
+library(readr)
+library(purrr)
+library(ggtext)
+library(ggvenn)
+library(RColorBrewer)
+library(ggrepel)
+library(ellipse)
+library(data.table)
+library(adegenet)
+library(dartR)
+```
+
+### 1.2 About the data
+
+We run a genotype call using the populations described in https://doi.org/10.1016/j.meegid.2022.105333
+
+Check your Plink2 version.
+```{bash plink2_version}
+plink2 --version
+```
+
+**First check if the data is in the correct location:**
+```{bash check_files, cache=TRUE}
+ls data/global* # we use * to truncate the name of the file showing all files
+```
+
+## 2. The data
+
+I prepared the data with the families and individual ids. I also set the reference alleles to match the AlbF3 genome assembly
+
+We can check how many sample names we have in our vcf
+```{bash check_sample_names_in_vcf_file}
+# make sure you have all the .CEL samples in your family file
+bcftools query -l data/global_brazil.vcf | wc -l
+```
+
+Make sure only biallelic sites are used.
+```{bash}
+bcftools view -m2 -M2 -v snps data/global_brazil.vcf > data/global_brazil2.vcf
+```
+
+### 2.1 Use Plink2 to convert to bed format
+
+```{bash plink2_convert_vcf_to_bed1}
+# If you run this chunk you will have to open the file.fam in a text editor and set parents id and sex of each individual. I fix it using bash tools. You can start on the next chunk if you do not want to have to repeat what I did.
+# we also check if the reference genome and the reference alleles match.
+plink2 \
+--allow-extra-chr \
+--vcf data/global_brazil2.vcf \
+--const-fid \
+--make-bed \
+--exclude output/segregation/aegypti_SNPs_fail_segregation.txt \
+--out output/global_brazil/file1 \
+--silent;
+grep "variants" output/global_brazil/file1.log; # to get the number of variants from the log file.
+```
+
+Check bim file
+```{bash}
+tail output/global_brazil/file1.bim
+```
+
+Check the fam file
+```{bash check_fam_file}
+# Check head of data
+head output/global_brazil/file1.fam
+```
+
+
+```{bash, cache=TRUE}
+head -n 5 data/global_brazil_fam.txt
+```
+
+
+### 2.2 Use R to update the .fam file
+
+Import the fam file we use with Axiom Suite
+
+```{r import_fam_file_Axiom, cache=TRUE}
+# the order of the rows in this file does not matter
+global <-
+  read.delim(
+    file   = here(
+      "data",
+      "global_brazil_fam2.txt"
+    ),
+    header = TRUE
+  )
+head(global)
+
+```
+
+To create sample file
+```{r, eval=FALSE}
+global <-
+  read.delim(
+    file   = here(
+      "data",
+      "global_brazil_fam.txt"
+    ),
+    header = TRUE
+  )
+head(global)
+
+global$Region <- NA # Create new column with NA values
+
+# Function to map country to region
+region_mapper <- function(country) {
+  switch(country,
+         "Mexico" = "North America",
+         "USA" = "North America",
+         "Colombia" = "South America",
+         "Brazil" = "South America",
+         "Costa Rica" = "Central America",
+         "Trinidad and Tobago" = "Central America",
+         "Australia" = "Oceania",
+         "Gabon" = "Africa",
+         "South Africa" = "Africa",
+         "Uganda" = "Africa",
+         "Senegal" = "Africa",
+         "Cameroon" = "Africa",
+         "Georgia" = "Asia",
+         "Vietnam" = "Asia",
+         "Saudi Arabia" = "Asia",
+         "Pakistan" = "Asia",
+         "Philippines" = "Asia",
+         "Sri Lanka" = "Asia",
+         "Turkey" = "Asia",
+         "Portugal" = "Europe",
+         "Dominica" = "Caribbean",
+         "St Vincent Grenadines" = "Caribbean",
+         "French Polynesia" = "Pacific",
+         "Other"
+  )
+}
+
+# Apply function to country column
+global$Region <- sapply(global$country, region_mapper)
+
+# Check the updated DataFrame
+head(global)
+
+cities <- global |>
+  dplyr::select(
+    pop, city, country, Continent, Region, Latitude, Longitude
+  )
+
+saveRDS(
+  cities,
+  here(
+    "output", "global_brazil", "cities_loc.rds"
+  )
+)
+```
+
+Select columns
+```{r}
+samples <- global |>
+  dplyr::select(
+    Sample.Filename, Family_ID, Individual_ID, Father_ID, Mother_ID, Sex, Affection.Status
+  )
+
+head(samples)
+```
+
+
+Import .fam file we created once we created the bed file using Plink2
+
+```{r import_fam_dp}
+# The fam file is the same for both data sets with the default or new priors
+fam1 <-
+  read.delim(
+    file   = here(
+      "output", "global_brazil", "file1.fam"
+    ),
+    sep = "\t",
+    header = FALSE,
+    
+  )
+head(fam1)
+```
+
+We can merge the tibbles.
+
+```{r merge_objects1}
+# Create index
+fam1_temp <- fam1 |>
+  mutate(num_id = seq_len(nrow(fam1)))
+
+# Merge
+df <- fam1_temp |>
+  left_join(samples, by = c(V2 = "Sample.Filename")) |>
+  arrange(num_id) |>
+  dplyr::select(8:13)
+
+# check the data frame
+head(df)
+```
+
+We can check how many samples we have in our file
+
+```{r check_number_samples_df}
+nrow(df)
+```
+
+Before you save the new fam file, you can change the original file to a different name, to compare the order later. If
+you want to repeat the steps above after you saving the new file1.fam, you will need to import the vcf again.
+
+```{r save_new_fam_file}
+# Save and override the .fam file for dp
+write.table(
+  df,
+  file      = here(
+    "output", "global_brazil", "file1.fam"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Check the new .fam file to see if has the order and the sample attributes we want.
+
+```{bash, cache=TRUE}
+# you can open the file on a text editor and double check the sample order and information.
+head -n 5 output/global_brazil/file1.fam
+```
+
+### 2.3 Lift the SNP positions to AaegL5 genome assembly
+
+Check the bim file
+```{bash}
+head output/global_brazil/file1.bim
+```
+
+
+Import the bim file from the crosses
+
+```{r}
+# load the function that we saved earlier
+source(
+  here(
+    "scripts", "analysis", "import_bim.R"
+  ),
+  local = knitr::knit_global()
+)
+
+# import the file
+file1 <- import_bim(
+  here(
+    "output", "global_brazil", "file1.bim"
+  )
+)
+
+# Convert to data table
+setDT(file1)
+
+# Rename columns
+setnames(file1, "SNP", "SNP_id")
+setnames(file1, "Scaffold", "Scaffold_chip")
+setnames(file1, "Position", "Position_chip")
+
+head(file1)
+```
+
+Import the file with SNP positions
+```{r}
+snps_pos <- read.table(
+  file      = here("output", "segregation", "snp_pos_AaegL5.txt"),
+  sep       = "\t",
+  header    = TRUE,
+  stringsAsFactors = FALSE
+)
+# Ensure snps_pos is a data table
+setDT(snps_pos)
+
+head(snps_pos)
+```
+
+Merge the data
+```{r}
+# Perform a left join with file1 and snps_pos, by SNP_id
+merged_data <- file1 |>
+  left_join(snps_pos, by = "SNP_id")
+
+head(merged_data)
+```
+
+
+```{r}
+# Use the tidyr::replace_na() function to replace NA values with a default value.
+merged_snps <- merged_data |>
+  dplyr::select(Chromosome, SNP_id, Cm, Position, Allele1, Allele2) |>
+  tidyr::replace_na(list(Chromosome = 0)) # Replace NA with 0 in the Chromosome column
+
+# Filter
+merged_snps <- merged_data |>
+  dplyr::select(Chromosome, SNP_id, Cm, Position, Allele1, Allele2) |>
+  dplyr::filter(!is.na(Chromosome)) # Remove rows where Chromosome is NA
+
+head(merged_snps)
+```
+
+Make sure we remove any duplicated ID (remove both)
+```{r}
+# Identify duplicate SNP_ids
+duplicates <- merged_snps |>
+  filter(duplicated(SNP_id) | duplicated(SNP_id, fromLast = TRUE))
+
+# Remove all rows with duplicate SNP_ids
+merged_snps_unique <- merged_snps |>
+  anti_join(duplicates, by = "SNP_id")
+
+head(merged_snps_unique)
+```
+
+
+
+Check if the order of the SNP match the file1.bim
+```{bash}
+head output/global_brazil/file1.bim
+```
+
+Before we save the new bim file we need to export the SNP ids that we can use. Remember, not all probe sequences mapped uniquely in the current genome. Then we export the data and extract the SNPs we can use, creating a new bed file.
+
+```{r}
+# # Write the unique SNP_ids to a file
+write.table(
+  merged_snps_unique$SNP_id,
+  file      = here("output", "global_brazil", "snp_2_keep.txt"),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Now use plink to extract the SNPs
+
+
+```{bash}
+plink \
+--allow-extra-chr \
+-bfile output/global_brazil/file1 \
+--make-bed \
+--extract output/global_brazil/snp_2_keep.txt \
+--out output/global_brazil/file2 \
+--silent;
+grep "variants" output/global_brazil/file2.log;
+```
+
+Save the new .bim file
+
+```{r}
+write.table(
+  merged_snps_unique,
+  file      = here(
+    "output", "global_brazil", "file2B.bim"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Rename the .bim files
+
+```{bash}
+# change the name of the first .bim file, for example, append _backup.bim, and then replace the original file
+mv output/global_brazil/file2.bim output/global_brazil/file2_backup.bim;
+# than change the new bim we create to the original name (do it only once, otherwise it will mess up)
+mv output/global_brazil/file2B.bim output/global_brazil/file2.bim
+```
+
+
+Create a new bed file with Plink to see if it works. For example, to see if the variants are in the
+right order
+
+```{bash}
+plink \
+--bfile output/global_brazil/file2 \
+--make-bed \
+--out output/global_brazil/file3;
+```
+
+
+Check the new bim file
+```{bash}
+head output/global_brazil/file3.bim
+```
+
+We do not have some of the alleles because we exported all 50k SNPs, and not the recommended SNPs.
+
+Set the reference alleles to match the genome
+```{bash}
+plink2 \
+--bfile output/global_brazil/file3 \
+--make-bed \
+--fa output/probes/genomes/AaegL5_ncbi.fasta.gz \
+--ref-from-fa 'force' `# sets REF alleles when it can be done unambiguously, we use force to change the alleles` \
+--out output/global_brazil/file4 \
+--silent;
+grep "variants" output/global_brazil/file4.log
+```
+
+
+Check the new bim file
+```{bash}
+head output/global_brazil/file4.bim
+```
+
+
+### 2.2 Checking the number of samples and localities
+
+```{bash get_pops_n, cache=TRUE}
+# this part is very important. Make sure there are no NAs or something that is not what you would expect. For example, the number of mosquitoes per population.
+awk '{print $1}' output/global_brazil/file4.fam | sort | uniq -c | awk '{print $2, $1}' # here we use awk to print the first column of the file1.fam. Then we sort it using sort, and count the unique occurrences with uniq. The second awk command is for aesthetic reasons, I prefer showing the family name on the left and the counts on the right. You can always check the manual to see explanations for all the tools. For example, type man awk, man sort, or man uniq to see all the operations or options available. The pipe operator (|) passes the output (stdout) of one command as input (stdin) to another. Since we create a command using the pipe operator, we can call it a pipeline.
+```
+
+In Linux/Unix we have 3 `I/O streams`: Standard input (`stdin`) - this is the file handle that your process reads to get
+information from you.<br> Standard output (`stdout`) - your process writes conventional output to this file handle.<br>
+Standard error (`sterr`) - your process writes diagnostic output to this file handle.<br> Most programs need to read
+input, write output, and log errors, so `stdin`, `stdout`, and `stderr` are predefined as a programming convenience.<br>
+
+
+## 3. Quality control steps
+
+### 3.1 Missingness
+
+```{bash plink2_filter_SNP}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file4 \
+--geno 0.1                `# we set genotype missiningness to 10% with this option` \
+--make-bed \
+--out output/global_brazil/file5 \
+--silent \
+--missing;                 # --missing produces sample-based and variant-based missing data reports. If run with --within/--family, the variant-based report is stratified by cluster.
+grep "variants" output/global_brazil/file5.log
+```
+
+Make plot
+```{r plot_ind_missingness, cache=TRUE}
+#   ____________________________________________________________________________
+#   import individual missingness                                           ####
+indmiss <-                                              # name of the data frame we are creating
+  read.delim(                                           # use function read table
+    file   = here(
+      "output", "global_brazil", "file5.smiss"
+    ),                                                  # we use library here to import file5.imiss from data/QC
+    header = TRUE                                       # we do have headers in our file
+  )
+#   ____________________________________________________________________________
+#   import SNP missingness                                                  ####
+snpmiss <-
+  read.delim(
+    file   = here(
+      "output", "global_brazil", "file5.vmiss"
+    ),
+    header = TRUE
+  )
+#
+```
+
+Plot individual missingness
+```{r plot_individual_missingness, cache=TRUE}
+# This code uses the ggplot2 package to create a histogram of the variable F_MISS from the dataset indmiss. The code customizes several aspects of the plot to improve its clarity and visual appeal.
+#
+# The geom_histogram function specifies the color and fill of the bars, as well as the number of bins to use. The stat_bin function adds text labels to each bin indicating the number of observations in that bin. The geom_vline function adds a vertical dotted line at the position of the mean of F_MISS, while geom_text adds a text label indicating the value of the mean as a percentage.
+#
+# The labs function is used to label the x and y axes of the plot, while theme_minimal customizes the font and size of the plot elements. The scale_x_continuous function modifies the x-axis to display percentages, and the theme function further modifies the appearance of the grid lines and axis labels.
+#
+# Overall, this code provides a clear and visually appealing representation of the distribution of F_MISS in the indmiss dataset.
+
+# load plotting theme
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot( # Start a ggplot object with the data and aesthetic mappings
+  indmiss,
+  aes(
+    x = F_MISS
+  )
+) +
+  geom_histogram( # Add a histogram layer
+    color            = "black",
+    fill             = "#B6FAD7",
+    bins             = 6
+  ) +
+  geom_text(
+    # Add text labels for bin counts
+    stat             = "bin",
+    aes(
+    label = after_stat(count)
+  ),
+    vjust            = -0.5,
+    color            = "purple",
+    size             = 3,
+    bins             = 6
+  ) +
+  geom_vline(
+    # Add a vertical line at the mean of F_MISS
+    aes(
+    xintercept = mean(F_MISS)),
+    color            = "orange",
+    linetype         = "dotted",
+    linewidth        = .5
+  ) +
+  geom_text(
+    # Add a text label for the mean of F_MISS
+    aes(
+      x = mean(F_MISS),
+      y = 75,
+      label = paste0(
+        "Mean \n",
+        scales::percent(mean(F_MISS),
+          accuracy = 0.01
+        )
+      )
+    ),
+    size = 3,
+    color = "orange",
+    hjust = -.1
+  ) +
+  labs( # Add axis labels
+    x                = "Individual Missingness (%)",
+    y                = "Frequency (n)"
+  ) +
+  my_theme() +
+  scale_x_continuous( # Scale the x-axis to display percentages
+    labels           = scales::percent,
+    n.breaks         = 6
+  )
+#
+# save the plot
+ggsave(
+  here(
+    "output", "global_brazil", "figures" , "individual_missingness.pdf"
+  ),
+  width              = 7,
+  height             = 5,
+  units              = "in"
+)
+```
+
+Plot variant missingness
+```{r plot_variant_missingness, cache=TRUE}
+# This plot takes a while to compute
+# This code creates a histogram from the indmiss data set using the F_MISS column.
+# ggplot builds a histogram of individual missingness data
+ggplot(
+  snpmiss,
+  aes(
+    x = F_MISS
+  )
+) +
+  geom_histogram(
+    color = "black",
+    fill = "#B6FAD7",
+    bins = 6
+  ) +
+  stat_bin(
+    geom = "text",
+    aes(
+      label = format(
+        after_stat(count),
+        big.mark = ",",
+        scientific = FALSE
+      )
+    ),
+    vjust = -0.5,
+    color = "purple",
+    size = 2,
+    bins = 6
+  ) +
+  geom_vline(
+    aes(
+      xintercept = mean(F_MISS)
+    ),
+    color = "orange",
+    linetype = "dotted",
+    linewidth = 0.5
+  ) +
+  geom_text(
+    aes(
+      x = mean(F_MISS),
+      y = 16000,
+      label = paste0(
+        "Mean \n",
+        scales::percent(mean(F_MISS),
+          accuracy = 0.01
+        )
+      )
+    ),
+    size = 3,
+    color = "orange",
+    # hjust = 1.5,
+    vjust = -.2
+  ) +
+  labs(
+    x = "Variant Missingness (%)",
+    y = "Frequency (n)"
+  ) +
+  # theme_minimal(
+  #   base_size = 12,
+  #   base_family = "Roboto Condensed"
+  # ) +
+  scale_x_continuous(
+    labels = scales::percent,
+    n.breaks = 6
+  ) +
+  scale_y_continuous(
+    labels = scales::label_comma(),
+    n.breaks = 5
+  ) +
+  my_theme()
+
+# save the plot
+ggsave(
+  here(
+    "output", "global_brazil", "figures", "SNPs_missingness.pdf"
+  ),
+  width  = 7,
+  height = 5,
+  units  = "in"
+)
+```
+
+Remove individuals missing more than 20% of SNPs. You can use the threshold you want, change the flag --mind
+
+```{bash plink2_filter_ind}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file5 \
+--mind 0.2               `# here we set the individual missingness threshold of 20%`\
+--make-bed \
+--out output/global_brazil/file6 \
+--silent;
+grep "samples\|variants" output/global_brazil/file6.log
+```
+We did not remove any SNP due to individual missingness
+
+### 3.2 Minor allele frequency
+
+First lets make a plot of the MAF. First, we estimate the allele frequency with Plink.
+```{bash plink2_MAF_check, eval=FALSE}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file6 \
+--freq \
+--out output/global_brazil/MAF_check \
+--silent
+```
+
+Then we plot it with ggplot.
+
+```{r import_MAF}
+#   ____________________________________________________________________________
+#   Import MAF data                                                         ####
+maf_freq <-
+  read.delim(
+    here(
+      "output", "global_brazil", "MAF_check.afreq"
+    ),
+    header = TRUE
+  )
+```
+
+Make MAF plot
+```{r plot_MAF}
+#   ____________________________________________________________________________
+#   make the plot                                                           ####
+ggplot(
+  maf_freq,
+  aes(ALT_FREQS)
+) +
+  geom_histogram(
+    colour = "black",
+    fill = "#C4F3F5",
+    bins = 40
+  ) +
+  labs(
+    x = "Minor Allele Frequency (MAF)",
+    y = "Frequency (n)",
+    caption = "<span style='color:red;'><i>Red</i></span> <span style='color:black;'><i>line at</i></span><span style='color:red;'><i> MAF 10%</i></span><span style='color:black;'><i> threshold</i></span>."
+  ) +
+  geom_text(
+    aes(
+      x = .1,
+      y = 4000,
+      label = paste0("6,124 SNPs")
+    ),
+    size = 3,
+    color = "blue",
+    vjust = -.2
+  ) +
+  geom_vline(xintercept = 0.1, color = "red") +
+  my_theme() +
+  theme(plot.caption = element_markdown()) +
+  scale_y_continuous(label = scales::number_format(big.mark = ",")) +
+  scale_x_continuous(breaks = c(0, 0.1, 0.2, 0.4, 0.6, 0.8, 1))
+#   ____________________________________________________________________________
+#   save the plot                                                           ####
+ggsave(
+  here(
+    "output", "global_brazil", "figures", "MAF.pdf"
+  ),
+  width  = 5,
+  height = 4,
+  units  = "in"
+)
+```
+
+Now we apply the MAF filter.
+```{bash filter_MAF, cache=TRUE, eval=FALSE}
+# We will use MAF of 5%
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file6 \
+--maf 0.05 \
+--make-bed \
+--out output/global_brazil/file7 \
+--silent;
+grep "variants" output/global_brazil/file7.log
+```
+
+We removed 11864 variants due to the MAF filter. Next we will excludes markers which deviate from
+Hardy--Weinberg equilibrium (HWE). It is a common indicator of genotyping error, but may also
+indicate evolutionary selection. We have to do it for each population individually. We cannot do it
+for all populations at once. Therefore, the first step is create a new bed file with Plink keeping
+only one population. I like to create a new directory and name it "hardy", and copy the "file4"
+there.
+
+```{bash mkdirs_4_HWE, eval=FALSE}
+mkdir -p output/global_brazil/hardy;
+cp output/global_brazil/file7.* output/global_brazil/hardy/
+```
+
+### 3.3 HWE test
+
+Now we can run the HWE test. However, we will need to apply the SNP missingness again for each
+population. If we do not, the HWE will vary widely. With the bash script below, we will create a new
+file for each population, run the HWE test with HWE p value \<1e‐6 (HWE p value \<1e‐6). Then, we
+ask Plink to generate a list of SNPs that passed the test for each population.
+
+```{bash loop_filter_HWE, eval=FALSE}
+for fam in $(awk '{print $1}' output/global_brazil/hardy/file7.fam | sort | uniq); 
+do 
+echo $fam | \
+plink2 \
+--allow-extra-chr \
+--silent \
+--keep-allele-order \
+--bfile output/global_brazil/hardy/file7 \
+--keep-fam /dev/stdin \
+--make-bed \
+--out output/global_brazil/hardy/$fam \
+--hwe 0.000001 \
+--geno 0.1 \
+--write-snplist; \
+done
+```
+
+Next, we use "cat" and "`awk`" to concatenate the SNP list from all populations, and remove
+duplicates. Once we have a list of SNPs that passed the test for each population, we can use Plink
+to create a new bed file keeping only the SNPs that passed the test in each population.
+First, lets get the list of SNPs, and count how many passed:
+
+```{bash get_SNP_list_after_HWE, eval=FALSE}
+cat output/global_brazil/hardy/*.snplist | awk '!a[$0]++' > output/global_brazil/passed_hwe.txt;
+wc -l output/global_brazil/passed_hwe.txt
+```
+
+How many variants we had before
+
+```{bash check_n_variants_before_HWE}
+cat output/global_brazil/file7.bim | awk '{print $2}'| awk '!a[$0]++' | wc -l
+```
+
+Variants not passing HWE test
+```{r}
+14057 - 14057
+```
+All variants passed HWE test. If some failed, next time we could remove the variants that did not pass HWE test, using the --extract flag, extracting only those that passed HWE.
+
+
+### 3.4 LD pruning
+
+Since we do not have to remove any SNP due to deviation from HWE, we can proceed with heterozygosity
+estimates. The first step is to "prune" our data set. We will check the pairwise linkage estimates
+for all SNPs. We can work with file4. We will use "`indep-pairwide`" to check if there are SNPs
+above a certain linkage disequilibrium (LD) threshold. Check Plink documentation for more details
+<https://www.cog-genomics.org/plink/1.9/ld> I used "`--indep-pairwise 5 1 0.1`" , which indicates
+according to the documentation: `--indep-pairphase <window size>['kb'] <step size (variant ct)> <r^2
+threshold>` We will check in a window of 5kb if there is any pair of SNPs with r2 estimates above
+0.1, then we will move our window 1 SNP and check again for SNPs above the threshold. We will repeat
+this procedure until we check the entire genome.
+
+```{bash linkage_prunning, cache=TRUE, eval=FALSE}
+# you can change the values of indep-pairwise to see how many more variants are pruned. Ideally, we would use linkage network analysis to remove variants based on the interspersed or mosaic like block distribution.
+# we set a window of variants of 5 and move the window 1 variant per time, removing 1 of the variants with lowest MAF from a pair above the threshold of r^2 > 0.1
+# Try --indep-pairwise 50kb 1 0.1 to see.
+plink2 \
+--bfile output/global_brazil/file7 \
+--extract output/global_brazil/passed_hwe.txt \
+--indep-pairwise 50kb 1 0.1 \
+--out output/global_brazil/indepSNP \
+--silent;
+grep 'pairwise\|variants\|samples' output/global_brazil/indepSNP.log
+```
+
+Remember, the SNPs are not removed from our data set. Plink created 3 files when we run the code
+above. One is the "indepSNP.log" file, and the other two are:<br>"**indepSNP.prune.in**" -\> list of
+SNPs with squared correlation smaller than our r2 threshold of 0.1.<br>"i**ndepSNP.prune.out**" -\>
+list of SNPs with squared correlation greater than our r2 threshold of 0.1. For our heterozygosity
+estimates, we want to use the set of SNPs that are below our r2 threshold of 0.1. We consider that
+they are randomly associated. We can use Plink to estimate the heterozygosity using the
+"indepSNP.prune.in" file.
+
+### 3.6 Heterozygosity
+```{bash plink1.9_estimate_heterozygosity, cache=TRUE}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file7 \
+--extract output/global_brazil/indepSNP.prune.in \
+--het \
+--out output/global_brazil/R_check \
+--silent;
+grep 'variants' output/global_brazil/R_check.log
+```
+
+We can see that we started with 92,693 SNPs, then we only extract those that are not "linked" from
+the "indepSNP.prune.in" file. We used these SNPs to estimate heterozygosity. Now we can use R to
+part the R_check.het, to find the individuals with excess heterozygosity. We will remove any
+individual that deviates more the 3 standard deviations from the mean heterozygosity of the data
+set. The code below will create a list of individuals with excess heterozygosity (file named
+"`fail-het-qc.txt`"), and make a heterozygosity plot for the entire data set.
+
+```{r plot_heterozygosity, cache=TRUE}
+#   ____________________________________________________________________________
+#   find individuals with high heterozygosity                              ####
+# import the data from Plink
+het <- read.delim(
+  here(
+    "output", "global_brazil", "R_check.het"
+  ),
+  head = TRUE
+)
+#
+# check head of the file
+colnames(het)
+```
+
+Estimate het
+```{r calculate_het, cache=TRUE}
+# create a column named HET_RATE and calculate the heterozygosity rate
+het$HET_RATE <- (het$"OBS_CT" - het$"O.HOM") / het$"OBS_CT"
+#
+# use subset function to get values deviating from 4sd of the mean heterozygosity rate.
+het_fail <-
+  subset(
+    het, (het$HET_RATE < mean(
+      het$HET_RATE
+    ) - 4 * sd(
+      het$HET_RATE
+    )) |
+      (het$HET_RATE > mean(
+        het$HET_RATE
+      ) + 4 * sd(
+        het$HET_RATE
+      ))
+  )
+#
+# get the list of individuals that failed our threshold of 4sd from the mean.
+het_fail$HET_DST <-
+  (het_fail$HET_RATE - mean(
+    het$HET_RATE
+  )) / sd(
+    het$HET_RATE
+  )
+```
+
+Save the files to use with Plink
+
+```{r save_list_fail_het, cache=TRUE}
+#   ____________________________________________________________________________
+#   save the data to use with Plink2                                        ####
+#
+write.table(
+  het_fail,
+  here(
+    "output", "global_brazil", "fail-het-qc.txt"
+  ),
+  row.names = FALSE
+)
+```
+
+Make plot
+```{r plot_het, cache=TRUE}
+#   ____________________________________________________________________________
+#   make a heterozygosity plot                                              ####
+#
+ggplot(
+  het,
+  aes(
+    HET_RATE
+  )
+) +
+  geom_histogram(
+    colour           = "black",
+    fill             = "#CDFAF8",
+    bins             = 40
+  ) +
+  labs(
+    x                = "Heterozygosity Rate",
+    y                = "Number of Individuals"
+  ) +
+  geom_vline(
+    aes(
+      xintercept     = mean(
+        HET_RATE
+      )
+    ),
+    col              = "#F2C46F",
+    linewidth        = 1.5
+  ) +
+  geom_vline(
+    aes(
+      xintercept     = mean(
+        HET_RATE
+      ) + 4 * sd(
+        HET_RATE
+      )
+    ),
+    col              = "#BFB9B9",
+    linewidth        = 1
+  ) +
+  geom_vline(
+    aes(
+      xintercept     = mean(
+        HET_RATE
+      ) - 4 * sd(
+        HET_RATE
+      )
+    ),
+    col              = "#BFB9B9",
+    linewidth        = 1
+  ) + 
+  my_theme() +
+  scale_y_continuous(
+    labels           = comma
+  )
+#   ____________________________________________________________________________
+#   save the heterozygosity plot                                            ####
+ggsave(
+  here(
+    "output", "global_brazil", "figures", "Heterozygosity.pdf"
+  ),
+  width  = 5,
+  height = 4,
+  units  = "in"
+)
+```
+
+The red line in the plot above indicates the mean, and the orange line indicate 4 standard deviation
+from the mean. We can see that some mosquitoes do have excess heterozygous sites. We will remove
+them. We can get their ID from the file "`fail-het-qc.txt`". We can use the bash script below to
+parse the file to use with Plink
+
+```{bash parse_R_het_output, cache=TRUE}
+sed 's/"// g' output/global_brazil/fail-het-qc.txt | awk '{print$1, $2}'> output/global_brazil/het_fail_ind.txt;
+echo 'How many mosquitoes we need to remove from our data set:';
+cat output/global_brazil/het_fail_ind.txt | tail -n +2 | wc -l;
+echo 'Which mosquitoes we have to remove:';
+tail -n +2 output/global_brazil/het_fail_ind.txt
+```
+The population from Nepal has high heterozygosity reate. We will remove 4 individuals from this population and one from QNC
+
+Next, we will remove these mosquitoes from our data set using Plink:
+```{bash plink2_remove_fail_het, cache=TRUE, eval=FALSE}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file7 \
+--remove output/global_brazil/het_fail_ind.txt \
+--make-bed \
+--out output/global_brazil/file8 \
+--silent;
+grep 'variants\|samples' output/global_brazil/file8.log
+```
+
+### 3.7 Relatedness
+
+Check for cryptic relatedness. Check Plink2 documentation
+<https://www.cog-genomics.org/plink/2.0/distance> You can download King directly
+<https://www.kingrelatedness.com/manual.shtml> or check their manuscript
+<https://www.ncbi.nlm.populations.gov/pmc/articles/PMC3025716/pdf/btq559.pdf>
+From Plink2 documentation: "Note that KING kinship coefficients are scaled such that duplicate
+samples have kinship 0.5, not 1. First-degree relations (parent-child, full siblings) correspond to
+\~0.25, second-degree relations correspond to \~0.125, etc. It is conventional to use a cutoff of
+\~0.354 (the geometric mean of 0.5 and 0.25) to screen for monozygotic twins and duplicate samples,
+\~0.177 to add first-degree relations, etc." There two options. One is to run only --make-king and
+another one is to use --make-king-table We will use the threshold of 0.354 and create a table.
+
+
+```{bash plink2_make_king, cache=TRUE}
+# Plink2 will create a file with extension .king
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file8 \
+--extract output/global_brazil/indepSNP.prune.in \
+--make-king-table rel-check \
+--king-table-filter 0.354 \
+--out output/global_brazil/file9 \
+--silent;
+grep 'variants\|samples' output/global_brazil/file9.log
+```
+
+Check the individuals that did not pass our filtering.
+
+```{bash check_kin0, cache=TRUE}
+head output/global_brazil/file9.kin0;
+echo "How many are related?"
+wc -l output/global_brazil/file9.kin0
+```
+
+We want to remove one of the individuals of the pairs.
+```{bash remove_related1}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file8 \
+--extract output/global_brazil/indepSNP.prune.in \
+--make-king triangle bin \
+--out output/global_brazil/file9 \
+--silent;
+grep 'variants\|samples' output/global_brazil/file9.log
+```
+
+Now we can use Plink2 to remove one of the mosquitoes from the pair with high kinship. It will
+remove 32 samples since we had 2 samples in some populations with high relatedness, and we could
+remove 1 and keep the other two. Plink2 always tries to maximize the number of samples passing the
+filters.
+```{bash remove_related2}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file8 \
+--king-cutoff output/global_brazil/file9 0.354 \
+--make-bed \
+--extract output/global_brazil/indepSNP.prune.in \
+--out output/global_brazil/file10 \
+--silent;
+grep 'samples\|variants\|remaining' output/global_brazil/file10.log
+```
+
+Now we can check the individuals that were removed.
+```{bash check_id_removed_individuals}
+head output/global_brazil/file10.king.cutoff.out.id;
+echo "How many individuals were removed?"
+wc -l output/global_brazil/file10.king.cutoff.out.id
+```
+
+Create SNP set for analysis
+```{bash create_snp_set}
+plink2 \
+--bfile output/global_brazil/file10 \
+--make-bed \
+--extract output/global_brazil/indepSNP.prune.in \
+--out output/global_brazil/snps_sets/global \
+--silent;
+grep 'samples\|variants\|remaining' output/global_brazil/snps_sets/global.log
+```
+
+
+### 3.8 Quick PCA with Plink using the LD pruned data after removing the related individuals.
+We will run PCA analysis with LEA latter, but we can get a quick PCA using Plink.
+
+```{bash plink_pca}
+plink2 \
+--allow-extra-chr \
+--bfile output/global_brazil/file10 \
+--pca allele-wts \
+--freq \
+--out output/global_brazil/pca_pops \
+--silent;
+grep 'samples\|variants' output/global_brazil/pca_pops.log
+```
+
+Check the files
+```{bash check_eigenvec}
+head -n 2 output/global_brazil/pca_pops.eigenvec
+```
+
+```{bash check_eigenval}
+head -n 2 output/global_brazil/pca_pops.eigenval
+```
+
+Import PCA data
+```{r import_pca}
+# import the data from Plink
+pca <- read.delim(
+  here(
+    "output", "global_brazil", "pca_pops.eigenvec"
+  ),
+  head = TRUE
+)
+ 
+# check head of the file
+head(pca)
+```
+
+Get samples attributes
+```{r}
+cities <- readRDS(here("output", "global_brazil", "cities_loc.rds"))
+cities <- cities |>
+  distinct(pop, .keep_all = TRUE)
+
+head(cities)
+```
+
+
+Check number of samples per population
+```{r pca_sample_count}
+pops_pca <- 
+  pca |>
+  group_by(X.FID) |>
+  summarize(count_distinct = n_distinct(IID))
+
+# check it
+head(pops_pca)
+```
+
+Merge the data
+```{r merge_samples_pca}
+df4 <- pca |>
+  left_join(cities, by = c("X.FID" = "pop"))
+head(df4)
+```
+
+Get some data for the PCA plot
+```{r}
+# How many samples
+length(unique(df4$IID))
+# How many populations
+length(unique(df4$X.FID))
+# How many countries
+length(unique(df4$country))
+# How many Continents
+length(unique(df4$Continent))
+```
+
+Check the coutries
+```{r}
+unique(df4$country)
+```
+
+Check the Region
+```{r}
+unique(df4$Region)
+```
+
+
+Make plot showing Continent
+```{r}
+# source the plotting function
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+
+N = 100; M = 1000
+good.shapes = c(1:25,33:127)
+foo = data.frame( x = rnorm(M), y = rnorm(M), s = factor( sample(1:N, M, replace = TRUE) ) )
+
+palette1 <- brewer.pal(12, "Paired")
+palette2 <- brewer.pal(11, "Set3")
+palette23 <- c(palette1, palette2)
+
+# Compute the center of ellipses for each continent
+ellipse_centers <- df4 |>
+  group_by(Region) |>
+  summarise(PC1_center = mean(PC1), PC2_center = mean(PC2))
+
+# Compute the count for each country
+country_count <- df4 |>
+  group_by(country) |>
+  summarize(count = n())
+
+# Merge the count back to the main data
+df4 <- df4 |>
+  left_join(country_count, by = "country")
+
+# Create a custom label for the legend
+df4$country_label <- paste(df4$country, " (", df4$count, ")", sep="")
+
+# Define the color and shape manually
+palette23 <- c(palette1, palette2)
+colors <- setNames(palette23, unique(df4$country_label))
+shapes <- setNames(good.shapes[c(1:25, 58:67)], unique(df4$country_label))
+
+# Compute the center of ellipses for each continent
+ellipse_centers <- df4 |>
+  group_by(Region) |>
+  summarise(PC1_center = mean(PC1), PC2_center = mean(PC2))
+
+# # Calculate the number of samples per region
+continent_count <- df4 |>
+  group_by(Region) |>
+  summarise(count = n())
+continent_labels <-
+  setNames(
+    paste(continent_count$Region, " (", continent_count$count, ")", sep = ""),
+    continent_count$Region
+  )
+
+# Define the colors you want for each continent
+continent_colors <- c("red", "blue", "green", "orange", "magenta", "gray", "cyan", "purple", "brown")
+
+
+combined_colors <- c(colors, setNames(continent_colors, unique(df4$Region)))
+
+# Create the plot
+ggplot(df4, aes(PC1, PC2)) +
+  geom_point(aes(shape = country_label, color = country_label)) +
+  stat_ellipse(
+    aes(fill = Region, group = Region),
+    geom = "polygon",
+    alpha = 0.2,
+    level = 0.8,
+    segments = 40
+  ) +
+  stat_ellipse(
+    data = df4,
+    aes(x = PC1, y = PC2, color = Region, group = Region),
+    geom = "path",
+    level = 0.8,
+    segments = 40,
+    color = "pink"
+  ) +
+  geom_label_repel(
+    data = ellipse_centers,
+    aes(x = PC1_center, y = PC2_center, label = Region),
+    color = "magenta",
+    size = 3,
+    box.padding = 0,
+    label.size = NA,
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 20,
+    fill = scales::alpha("white", 0.5)
+  ) +
+  xlab("PC1 (20.30% Variance)") +
+  ylab("PC2 (13.80% Variance)") +
+  labs(caption = "Principal Component Analysis using 9,182 unlinked SNPs \n of 1,330 mosquitoes from 106 localities across 23 countries.") +
+  guides(
+    color = guide_legend(
+      title = "Country",
+      order = 2,
+      ncol = 2,
+      override.aes = list(linetype = 0)
+    ),
+    shape = guide_legend(
+      title = "Country",
+      order = 2,
+      ncol = 2
+    ),
+    fill = guide_legend(
+      title = "Region",
+      order = 1,
+      ncol = 3
+    )
+  ) +
+  scale_shape_manual(values = shapes) +
+  scale_color_manual(values = colors) + # Replace with colors variable
+  scale_fill_manual(values = continent_colors, labels = continent_labels) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "right",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 30, 5.5, 5.5, "points"),
+    legend.margin = margin(10, 10, 10, 10)
+  )
+
+# #   ____________________________________________________________________________
+# #   save the pca plot                                                       ####
+ggsave(
+  here(
+    "output", "global_brazil", "figures", "PCA_pc1_2_plink_continent.pdf"
+  ),
+  width  = 12,
+  height = 6,
+  units  = "in"
+)
+```
+
+```{r}
+# Create the plot
+ggplot(df4, aes(PC1, PC2)) +
+  geom_point(aes(shape = country_label, color = country_label)) +
+  stat_ellipse(
+    aes(fill = Continent, group = Continent),
+    geom = "polygon",
+    alpha = 0.2,
+    level = 0.8,
+    segments = 40
+  ) +
+  # stat_ellipse(
+  #   data = df4,
+  #   aes(x = PC1, y = PC2, color = Continent, group = Continent),
+  #   geom = "path",
+  #   level = 0.8,
+  #   segments = 40
+  # ) +
+  geom_label_repel(
+    data = ellipse_centers,
+    aes(x = PC1_center, y = PC2_center, label = Region),
+    color = "magenta",
+    size = 3,
+    box.padding = 0,
+    label.size = NA,
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 20
+  ) +
+  xlab("PC1 (20.30% Variance)") +
+  ylab("PC2 (13.80% Variance)") +
+  labs(caption = "Principal Component Analysis using 9,182 unlinked SNPs \n of 1,330 mosquitoes from 106 localities across 23 countries.") +
+  guides(
+    color = guide_legend(
+      title = "Country",
+      order = 2,
+      ncol = 2,
+      override.aes = list(linetype = 0)
+    ),
+    shape = guide_legend(
+      title = "Country",
+      order = 2,
+      ncol = 2
+    ),
+    fill = guide_legend(
+      title = "Continent",
+      order = 1,
+      ncol = 3
+    )
+  ) +
+  scale_shape_manual(values = shapes) +
+  scale_color_manual(values = colors) + # Replace with colors variable
+  scale_fill_manual(values = continent_colors, labels = continent_labels) +
+  my_theme() +
+  theme(
+    plot.caption = element_text(face = "italic"),
+    legend.position = "right",
+    legend.justification = "top",
+    legend.box.just = "center",
+    legend.box.background = element_blank(),
+    plot.margin = margin(5.5, 30, 5.5, 5.5, "points"),
+    legend.margin = margin(10, 10, 10, 10)
+  )
+
+```
+
+
+# 4. PCA with DAPC
+
+```{r}
+# Remove all objects from the environment
+rm(list = ls())
+
+# Run the garbage collector to free up memory
+gc()
+```
+
+```{r, cache=TRUE}
+cities <- readRDS(
+  here(
+    "output", "global_brazil", "cities_loc.rds"
+  )
+)
+```
+
+Create files
+```{bash}
+plink \
+--keep-allele-order \
+--bfile output/global_brazil/file10 \
+--make-bed \
+--out output/global_brazil/dapc1 \
+--silent;
+grep 'samples\|variants\|remaining' output/global_brazil/dapc1.log
+```
+
+Check fam file
+```{bash}
+head output/global_brazil/dapc1.fam
+```
+
+Import .fam file we created once we created the bed file using Plink2
+
+```{r}
+fam_file_path <- here("output", "global_brazil", "dapc1.fam")
+fam1 <- read.table(fam_file_path, header = FALSE)
+
+head(fam1)
+```
+
+We can merge the tibbles.
+
+```{r}
+# Extract the number part from the columns
+fam1_temp <- fam1 |>
+  mutate(num_id = as.numeric(str_extract(V2, "^\\d+")))
+
+# Assuming your data frame is named fam1
+fam1$V2 <- paste(fam1$V1, fam1$V2, sep = "_")
+
+# To check the first few rows of the modified data frame
+head(fam1)
+```
+Save it
+```{r}
+# Save and override the .fam file for dp
+write.table(
+  fam1,
+  file      = here(
+    "output", "global_brazil", "dapc1.fam"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Check the new .fam file to see if has the order and the sample attributes we want.
+
+```{bash, cache=TRUE}
+# you can open the file on a text editor and double check the sample order and information.
+head -n 5 output/global_brazil/dapc1.fam
+```
+
+```{bash}
+plink \
+--allow-extra-chr \
+--keep-allele-order \
+--bfile output/global_brazil/dapc1 \
+--recodeA \
+--out output/global_brazil/dapc2 \
+--silent;
+grep 'samples\|variants\|remaining' output/global_brazil/dapc2.log
+```
+
+
+```{r, eval=FALSE}
+### DAPC (in adegenet) #####
+snp <- 
+  read.PLINK(
+    here(
+      "output", "global_brazil", "dapc2.raw"
+    ),
+    quiet = FALSE,
+    chunkSize = 1000,
+    parallel = require("parallel"),
+    n.cores = 4
+  )
+
+nInd(snp)
+nLoc(snp)
+nPop(snp)
+indNames(snp)
+```
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  snp, here(
+    "output", "global_brazil", "snp.rds"
+  )
+)
+```
+
+To load it
+```{r}
+snp <- readRDS(
+  here(
+    "output", "global_brazil", "snp.rds"
+  )
+)
+```
+
+```{r}
+# Check for duplicates
+duplicates <- duplicated(indNames(snp))
+
+# See if there are any duplicates
+any(duplicates)
+```
+If there is any, what is it
+```{r}
+# Find duplicates - both first occurrence and later duplicates
+duplicates <- indNames(snp)[duplicated(indNames(snp)) | duplicated(indNames(snp), fromLast = TRUE)]
+
+# Print the duplicate IDs
+unique(duplicates)
+```
+
+Convert to genid
+```{r, eval=FALSE}
+snp2 <- gl2gi(snp, probar = FALSE, verbose = NULL)
+```
+
+Scale
+```{r, eval=FALSE}
+snp3 <- scaleGen(snp2, NA.method="mean")
+class(snp3)
+```
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  snp3, here(
+    "output", "global_brazil", "snp3.rds"
+  )
+)
+```
+
+To load it
+```{r}
+snp3 <- readRDS(
+  here(
+    "output", "global_brazil", "snp3.rds"
+  )
+)
+```
+
+
+```{r}
+dim(snp3)
+snp3[1:5,1:5]
+```
+
+```{r}
+# Get the populations from the genlight object
+populations <- snp$pop
+populations
+```
+
+
+Run DAPC with  object
+```{r, eval=FALSE}
+dapc_snp <- dapc(snp3, n.pca = 10, n.da = 10, grp = populations)
+```
+
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  dapc_snp, here(
+    "output", "global_brazil", "dapc_snp.rds"
+  )
+)
+```
+
+To load it
+```{r}
+dapc_snp <- readRDS(
+  here(
+    "output", "global_brazil", "dapc_snp.rds"
+  )
+)
+```
+
+```{r}
+library(RColorBrewer)
+
+# Define a base palette
+base_palette <- brewer.pal(9, "Set1")
+
+# Interpolate to create a larger palette
+color_palette <- colorRampPalette(base_palette)(106)
+
+pop_colors <- setNames(color_palette, unique(snp@pop))
+```
+
+Plot using different discriminant functions
+```{r, fig.height=10, fig.width=10}
+# 1 and 2
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 2  
+)
+
+```
+```{r, fig.height=10, fig.width=10}
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 3
+)
+```
+
+```{r, fig.height=10, fig.width=10}
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 4
+)
+```
+
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_discriminat_functions_12.pdf"), width = 8, height = 8)
+col <- funky(106)
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 2
+)
+dev.off()
+```
+
+
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_discriminat_functions_13.pdf"), width = 8, height = 8)
+col <- funky(106)
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 3
+)
+dev.off()
+```
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_discriminat_functions_14.pdf"), width = 8, height = 8)
+col <- funky(106)
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 1, 
+  yax = 4
+)
+dev.off()
+```
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_discriminat_functions_23.pdf"), width = 8, height = 8)
+col <- funky(106)
+scatter(
+  dapc_snp,
+  bg = "white",
+  scree.da = TRUE,
+  cex = 1,
+  pch = 20,
+  clabel=0.7,
+  cex.lab = 0.1,
+  col = pop_colors,
+  xax = 2, 
+  yax = 3
+)
+dev.off()
+```
+
+```{r}
+pca1 <- dudi.pca(snp3,cent=FALSE,scale=FALSE,scannf=FALSE,nf=8)
+barplot(pca1$eig[1:50],main="PCA eigenvalues", col=heat.colors(50))
+```
+
+
+```{r}
+pca1
+```
+
+```{r, fig.height=10, fig.width=10}
+col <- funky(106)
+# s.class(pca1$li, pop(snp),xax=1,yax=3, col=transp(col,.6), axesell=FALSE,
+#         cstar=0, cpoint=2, grid=FALSE)
+
+s.class(pca1$li, clabel=0.7, col=transp(col,.6), pop(snp))
+title("Axes 1-2")
+add.scatter.eig(pca1$eig[1:20], 3,1,2)
+```
+
+
+```{r, fig.height=10, fig.width=10}
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=1,yax=3,sub="PCA 1-3",csub=2, clabel=0.7, col=transp(col,.6)) 
+title("Axes 1-3")
+add.scatter.eig(pca1$eig[1:20],nf=3,xax=1,yax=3)
+```
+
+```{r, fig.height=10, fig.width=10}
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=2,yax=3,sub="PCA 2-3",csub=2, clabel=0.7, col=transp(col,.6)) 
+title("Axes 2-3")
+add.scatter.eig(pca1$eig[1:20],nf=3,xax=2,yax=3)
+```
+
+
+
+PC 1 and 2
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_1_2.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=1,yax=2,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 1-2")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=1,yax=2)
+dev.off()
+```
+
+
+PC 1 and 3
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_1_3.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=1,yax=3,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 1-3")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=1,yax=3)
+dev.off()
+```
+
+PC 1 and 4
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_1_4.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=1,yax=4,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 1-4")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=1,yax=4)
+dev.off()
+```
+PC 2 and 4
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_2_4.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=2,yax=4,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 2-4")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=2,yax=4)
+dev.off()
+```
+PC 2 and 3
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_2_3.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=2,yax=3,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 2-3")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=2,yax=3)
+dev.off()
+```
+
+PC 1 and 4
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_1_4.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=1,yax=4,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 1-4")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=1,yax=4)
+dev.off()
+```
+
+
+PC 3 and 4
+```{r}
+pdf(here(
+    "output", "global_brazil", "figures" , "PCA_plot_axes_3_4.pdf"), width = 8, height = 8)
+col <- funky(106)
+s.class(pca1$li,pop(snp),xax=3,yax=4,csub=2, clabel=0.7, col=transp(col,.6),grid=FALSE)
+title("Axes 3-4")
+add.scatter.eig(pca1$eig[1:20],nf=8,xax=3,yax=4)
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

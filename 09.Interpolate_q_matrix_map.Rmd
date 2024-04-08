@@ -1,0 +1,4316 @@
+---
+title: "Aedes aegypti in Brazil - Q matrices interpolation"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+# Overview
+
+To work through this, clone the repository (an RStudio project) at
+[https://github.com/eriqande/make-a-BGP-map](https://github.com/eriqande/make-a-BGP-map) to
+get all the necessary input files, etc.  Then open up the RStudio project and run
+though 'Make-a-BGP-map-Notebook.Rmd'.
+
+
+# Packages
+
+### Non-standard Packages
+
+1. **the fork** of `tess3r`.  Note that you can't use the default version of `tess3r`,
+you have to use my fork of it, which has some extra functionality.
+
+2. the package `genoscapeRtools`
+
+Get those packages like this:
+```{r, eval=FALSE}
+remotes::install_github("eriqande/TESS3_encho_sen")  # for special version of tess3r
+remotes::install_github("eriqande/genoscapeRtools")  # for Eric's genoscapeRtools
+```
+
+# Standard Packages
+
+You can get those like this:
+```{r, eval=FALSE}
+install.packages(c("raster", "sf", "tidyverse", "fields", "downloader"))
+```
+
+## Load the Packages
+
+```{r, comment=FALSE, warning=FALSE, message=FALSE}
+library(raster)  # important to load before tidyverse, otherwise it masks select()
+library(tidyverse)
+library(sf)
+library(ggspatial)
+library(ggplot2)
+library(dplyr)
+library(colorout)
+library(here)
+library(scatterpie)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+library(ggpattern)
+library(ggforce)
+```
+
+## 1. fastStructure Brazil simple prior k=8
+
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import matrix
+```{r}
+# Extract ancestry coefficients
+k8run1 <- read_delim(
+  here("output", "populations", "fastStructure", "luciano", "run01", "simple.8.meanQ"),
+  delim = "  ",
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k8run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here("output", "populations", "snps_sets", "brazil_2018.fam")
+
+# Read the .fam file
+fam_data <- read.table(
+  fam_file,
+  header = FALSE,
+  col.names = c(
+    "FamilyID",
+    "IndividualID",
+    "PaternalID",
+    "MaternalID",
+    "Sex",
+    "Phenotype"
+  )
+)
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k8run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k8run1)
+
+head(k8run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k8run1 <- k8run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k8run1)
+```
+
+
+```{r}
+brazil_loc <- readRDS(here("output", "populations", "brazil_loc.rds"))
+
+
+head(brazil_loc)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k8run1$index <- seq_len(nrow(k8run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k8run1,
+    brazil_loc,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#FFB347",
+  "v2" = "#F49AC2",
+  "v3" = "red",
+  "v4" = "#FFFF99",
+  "v5" = "#AE9393", # does not show
+  "v6" = "blue",
+  "v7" = "#7FFF00",
+  "v8" = "brown"
+)
+color_palette3 <-
+  c(
+  "v1" = "#FFB347",
+  "v2" = "#F49AC2",
+  "v3" = "red",
+  "v4" = "#FFFF99",
+  # "v5" = "#AE9393", # does not show
+  "v6" = "blue",
+  "v7" = "#7FFF00",
+  "v8" = "brown"
+)
+```
+
+
+### 1.1 Preparing the data for tess3Q_map_rasters
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 1.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+# remove the cluster without a region in the map
+Q_matrix <- k8run1 |>
+  dplyr::select(-ind, -pop, -index, -v5) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 1.3 Interpolate the Q-values by Kriging
+
+Check if colors and polulations match
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k8run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v5
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 1.4 Scaling and cleaning the genoscape_brick
+
+Re-scale
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+### 1.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+library(ggforce)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v8)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=8_fastStructure_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 2. fastStructure Brazil simple prior k=7
+
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k7run1 <- read_delim(
+  here("output", "populations", "fastStructure", "luciano", "run01", "simple.7.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k7run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here("output", "populations", "snps_sets", "brazil_2018.fam")
+
+# Read the .fam file
+fam_data <- read.table(
+  fam_file,
+  header = FALSE,
+  col.names = c(
+    "FamilyID",
+    "IndividualID",
+    "PaternalID",
+    "MaternalID",
+    "Sex",
+    "Phenotype"
+  )
+)
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k7run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k7run1)
+
+head(k7run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k7run1 <- k7run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k7run1)
+```
+
+Import samples attributes
+
+
+```{r}
+brazil_loc <- readRDS(here("output", "populations", "brazil_loc.rds"))
+
+
+head(brazil_loc)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k7run1$index <- seq_len(nrow(k7run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k7run1,
+    brazil_loc,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#FFFF99",
+  "v2" = "#AE9393", # does not show
+  "v3" = "red",
+  "v4" = "#7FFF00",
+  "v5" = "blue",
+  "v6" = "#F49AC2",
+  "v7" = "#FFB347"#,
+  # "v8" = "brown"
+)
+color_palette3 <-
+  c(
+  "v1" = "#FFFF99",
+  # "v2" = "#AE9393", # does not show
+  "v3" = "red",
+  "v4" = "#7FFF00",
+  "v5" = "blue",
+  "v6" = "#F49AC2",
+  "v7" = "#FFB347"#,
+  # "v8" = "brown"
+)
+```
+
+
+
+### 2.1 Preparing the data for tess3Q_map_rasters
+
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 2.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k7run1 |>
+  dplyr::select(-ind, -pop, -index, -v2) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 2.3 Interpolate the Q-values by Kriging
+
+For this, we use the above variables in tess3r::tess3Q_map_rasters().  Note the
+use of namespace addressing for this function rather than loading the whole tess3r package
+with the library() command.
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k7run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v2
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+That gives us a raster brick of Q-values associated with each cell in the raster, but
+those values are not always constrained between 0 and 1, so we have to massage them 
+a little bit in the next section.
+
+### 2.4 Scaling and cleaning the genoscape_brick
+
+For this we use the function 'genoscapeRtools::qprob_rando_raster()'.  This takes the raster
+brick that comes out of tess3Q_map_rasters() and does some rescaling and (maybe) some random sampling
+to return a raster of colors that I hope will do a reliable job of representing (in some way) predicted
+assignment accuracy over space.
+See '?genoscapeRtools::qprob_rando_raster' to learn about the scaling options, etc. (However, I am
+not convinced that all of those options are reliably estimated.)
+
+This will squash the raster brick down to a single
+RGBA (i.e., four channels, red, green, blue and alpha) raster brick.
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+### 2.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+library(ggforce)
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v7)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=7_fastStructure_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 3. fastStructure Brazil simple prior k=6 
+
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k6run1 <- read_delim(
+  here("output", "populations", "fastStructure", "luciano", "run01", "simple.6.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k6run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here("output", "populations", "snps_sets", "brazil_2018.fam")
+
+# Read the .fam file
+fam_data <- read.table(
+  fam_file,
+  header = FALSE,
+  col.names = c(
+    "FamilyID",
+    "IndividualID",
+    "PaternalID",
+    "MaternalID",
+    "Sex",
+    "Phenotype"
+  )
+)
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k6run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k6run1)
+
+head(k6run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k6run1 <- k6run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k6run1)
+```
+
+Import samples attributes
+
+```{r}
+brazil_loc <- readRDS(here("output", "populations", "brazil_loc.rds"))
+
+head(brazil_loc)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k6run1$index <- seq_len(nrow(k6run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k6run1,
+    brazil_loc,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#FFFF99",
+  "v2" = "#AE9393",# not showing
+  "v3" = "blue",
+  "v4" = "red",
+  "v5" = "#F49AC2",
+  "v6" = "#7FFF00"#,
+  # "v7" = "#FFB347",
+  # "v8" = "brown"
+)
+color_palette3 <-
+  c(
+  "v1" = "#FFFF99",
+  # "v2" = "#AE9393",# not showing
+  "v3" = "blue",
+  "v4" = "red",
+  "v5" = "#F49AC2",
+  "v6" = "#7FFF00"#,
+  # "v7" = "#FFB347",
+  # "v8" = "brown"
+)
+```
+
+
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(scatterpie)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# 
+# ggplot() +
+#   geom_sf(data = brazil, fill="white") +
+#   geom_scatterpie(data = df_mean, 
+#                   aes(x = Longitude, y = Latitude, r = .75), 
+#                   cols = c("v1", "v2", "v3", "v4", "v5", "v6"), color = NA) +
+#   geom_text_repel(
+#     data = df_mean,
+#     aes(x = Longitude, y = Latitude, label = pop),
+#     size = 2,
+#     box.padding = unit(.25, "lines"),
+#     # box.padding = 0,
+#     direction = "both",
+#     max.iter = 2000,
+#     force = 1,
+#     max.overlaps = 50 # Increase this value
+#   ) +
+#   scale_fill_manual(values = color_palette2) +
+#   guides(fill = "none") +  # Hide legend
+#   coord_sf(xlim = c(-75, -35), ylim = c(-35, 5)) +
+# 
+#   my_theme()
+# # # 
+# ggsave(
+#   here("output", "populations", "figures", "fastStructure_brazil_simple_k6_pie_luciano.pdf"),
+#   width  = 12,
+#   height = 6,
+#   units  = "in",
+#   device = cairo_pdf
+# )
+```
+
+
+### 3.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 3.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k6run1 |>
+  dplyr::select(-ind, -pop, -index, -v2) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 3.3 Interpolate the Q-values by Kriging
+
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k6run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v2
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+
+### 3.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+### 3.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v6)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=6_fastStructure_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 4. fastStructure Brazil simple prior k=5
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+Import matrix
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "fastStructure", "luciano", "run01", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here("output", "populations", "snps_sets", "brazil_2018.fam")
+
+# Read the .fam file
+fam_data <- read.table(
+  fam_file,
+  header = FALSE,
+  col.names = c(
+    "FamilyID",
+    "IndividualID",
+    "PaternalID",
+    "MaternalID",
+    "Sex",
+    "Phenotype"
+  )
+)
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import samples attributes
+
+
+```{r}
+brazil_loc <- readRDS(here("output", "populations", "brazil_loc.rds"))
+
+head(brazil_loc)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k5run1$index <- seq_len(nrow(k5run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k5run1,
+    brazil_loc,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#7FFF00",
+  "v2" = "#FFFF99",
+  "v3" = "blue",
+  "v4" = "#F49AC2",
+  "v5" = "red"#,
+  # "v6" = "#AE9393",
+  # "v7" = "#FFB347",
+  # "v8" = "brown"
+)
+```
+
+
+### 4.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 4.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k5run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 4.3 Interpolate the Q-values by Kriging
+
+For this, we use the above variables in tess3r::tess3Q_map_rasters().  Note the
+use of namespace addressing for this function rather than loading the whole tess3r package
+with the library() command.
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette2))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k5run1 |>
+  dplyr::select(
+    -pop, -ind, -index
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+### 3.4 Scaling and cleaning the genoscape_brick
+
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+
+### 3.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v5)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=5_fastStructure_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+## 5. Admixture Brazil k=11
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+Import matrix
+```{r}
+# Extract ancestry coefficients
+k11run1 <- read_delim(
+  here("output", "populations", "admixture", "brazil", "run1", "brazil_2018.11.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k11run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "brazil_2018.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k11run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k11run1)
+
+head(k11run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k11run1 <- k11run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k11run1)
+```
+
+Import samples attributes
+
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+
+pops <- sampling_loc |>
+  dplyr::select(
+    pop, latitude, longitude, city, biome
+  )
+
+head(pops)
+```
+
+
+```{r}
+# Add an index column to Q_tibble
+k11run1$index <- seq_len(nrow(k11run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k11run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#AE9393",
+  "v2" = "red",
+  "v3" = "brown",
+  "v4" = "blue",
+  "v5" = "gray",
+  "v6" = "magenta",
+  "v7" = "#FFB347",
+  "v8" = "#7FFF00",
+  "v9" = "cyan",
+  "v10" = "#F49AC2",
+  "v11" = "#FFFF99"
+)
+
+# without the clusters with a defined region
+color_palette3 <-
+  c(
+  # "v1" = "#AE9393",
+  "v2" = "red",
+  "v3" = "brown",
+  "v4" = "blue",
+  "v5" = "gray",
+  # "v6" = "magenta",
+  "v7" = "#FFB347",
+  "v8" = "#7FFF00",
+  "v9" = "cyan",
+  "v10" = "#F49AC2",
+  "v11" = "#FFFF99"
+)
+```
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(scatterpie)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(longitude),
+            Latitude = mean(latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = brazil, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = .75), 
+                  cols = c("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"), color = NA) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 2,
+    box.padding = unit(.25, "lines"),
+    # box.padding = 0,
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50 # Increase this value
+  ) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf(xlim = c(-75, -35), ylim = c(-35, 5)) +
+
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "admixture_brazil_k11_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 5.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = longitude,
+    Lat = latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 5.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k11run1 |>
+  dplyr::select(-ind, -pop, -index, -v1, -v6) |> # remove clusters without a defined region
+  as.matrix()
+head(Q_matrix)
+```
+
+### 5.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette3, length(color_palette3)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k11run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v1, -v6
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+### 5.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+### 5.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(longitude),
+            Latitude = mean(latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v11)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=11_admixture_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 6. Admixture Brazil k=8
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+Make plot
+```{r}
+# Extract ancestry coefficients
+k8run1 <- read_delim(
+  here("output", "populations", "admixture", "brazil", "run1", "brazil_2018.8.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k8run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "brazil_2018.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k8run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k8run1)
+
+head(k8run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k8run1 <- k8run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k8run1)
+```
+
+Import samples attributes
+
+
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+
+pops <- sampling_loc |>
+  dplyr::select(
+    pop, latitude, longitude, city, biome
+  )
+
+head(pops)
+```
+
+
+```{r}
+# Add an index column to Q_tibble
+k8run1$index <- seq_len(nrow(k8run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k8run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <-
+  c(
+  "v1" = "#AE9393",
+  "v2" = "#F49AC2",
+  "v3" = "#7FFF00",
+  "v4" = "blue",
+  "v5" = "red",
+  "v6" = "#FFB347",
+  "v7" = "#FFFF99",
+  "v8" = "brown"
+)
+
+# whithout the clusters with a defined region
+color_palette3 <-
+  c(
+  # "v1" = "#AE9393",
+  "v2" = "#F49AC2",
+  "v3" = "#7FFF00",
+  "v4" = "blue",
+  "v5" = "red",
+  "v6" = "#FFB347",
+  "v7" = "#FFFF99",
+  "v8" = "brown"
+)
+```
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(scatterpie)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(longitude),
+            Latitude = mean(latitude))
+
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+ggplot() +
+  geom_sf(data = brazil, fill="white") +
+  geom_scatterpie(data = df_mean, 
+                  aes(x = Longitude, y = Latitude, r = .75), 
+                  cols = c("v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"), color = NA) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 2,
+    box.padding = unit(.25, "lines"),
+    # box.padding = 0,
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50 # Increase this value
+  ) +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none") +  # Hide legend
+  coord_sf(xlim = c(-75, -35), ylim = c(-35, 5)) +
+
+  my_theme()
+# # 
+ggsave(
+  here("output", "populations", "figures", "admixture_brazil_k8_pie.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+### 6.1 Preparing the data for tess3Q_map_rasters
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = longitude,
+    Lat = latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 6.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k8run1 |>
+  dplyr::select(-ind, -pop, -index, -v1) |> # remove clusters without a defined region
+  as.matrix()
+head(Q_matrix)
+```
+
+### 6.3 Interpolate the Q-values by Kriging
+
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette3, length(color_palette3)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k8run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v1
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+### 6.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+
+### 5.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(longitude),
+            Latitude = mean(latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v8)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=8_admixture_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+## 7. LEA Brazil simple prior k=8 - luciano API coordinates
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+Matrix
+```{r}
+# Extract ancestry coefficients output/populations/snps_sets/brazil_2018.snmfProject
+k8run1 <- read_delim(
+  here("output", "populations", "snps_sets", "brazil_2018.snmf", "K8", "run1", "brazil_2018_r1.8.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k8run1)
+```
+
+The fam file
+```{r}
+fam_file <- here("output", "populations", "snps_sets", "brazil_2018.fam")
+
+# Read the .fam file
+fam_data <- read.table(
+  fam_file,
+  header = FALSE,
+  col.names = c(
+    "FamilyID",
+    "IndividualID",
+    "PaternalID",
+    "MaternalID",
+    "Sex",
+    "Phenotype"
+  )
+)
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID 
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k8run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k8run1)
+
+head(k8run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k8run1 <- k8run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k8run1)
+```
+
+Import samples attributes
+
+```{r}
+brazil_loc <- readRDS(here("output", "populations", "brazil_loc.rds"))
+
+brazil_loc <- brazil_loc |>
+  dplyr::select(
+    pop, Latitude, Longitude
+  )
+
+head(brazil_loc)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k8run1$index <- seq_len(nrow(k8run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k8run1,
+    brazil_loc,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+We used this color palette to make the "structure" plot
+```{r}
+color_palette2 <- c(
+  "v1" = "#FFFF99",
+  "v2" = "red",
+  "v3" = "#F49AC2",
+  "v4" = "#FFB347",
+  "v5" = "#AE9393",
+  "v6" = "#7FFF00",
+  "v7" = "brown",
+  "v8" = "blue"
+)
+color_palette3 <- c(
+  "v1" = "#FFFF99",
+  "v2" = "red",
+  "v3" = "#F49AC2",
+  "v4" = "#FFB347",
+  # "v5" = "#AE9393",
+  "v6" = "#7FFF00",
+  "v7" = "brown",
+  "v8" = "blue"
+)
+```
+
+
+### 7.1 Preparing the data for tess3Q_map_rasters
+
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 7.2 make a matrix of the Q values
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k8run1 |>
+  dplyr::select(-ind, -pop, -index, -v5) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+### 7.3 Interpolate the Q-values by Kriging
+
+```{r}
+print(ncol(Q_matrix) == length(color_palette3))
+```
+Create brick
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil <- world |>
+  filter(admin == "Brazil")
+
+
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = brazil,
+  window = extent(brazil)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(color_palette2, length(color_palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k8run1 |>
+  dplyr::select(
+    -pop, -ind, -index, -v5
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+
+### 7.4 Scaling and cleaning the genoscape_brick
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = color_palette3,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+### 7.5 Create plot
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+# For state boundaries
+world_states <- ne_states(country = "Brazil", returnclass = "sf")
+
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+# Load biomes shape file from IBGE
+biomes <-
+  st_read(here("scripts", "files", "Brazil_biomes", "Brazil_biomes.shp"), quiet = TRUE)
+
+# Rename name as Biomes, if you get an error here, make sure you import the shape file again
+biomes <- biomes |>
+  dplyr::rename(Biomes = name)
+
+# Change the name of the biomes (Portuguese to English)
+biomes <- biomes |>
+  mutate(
+    Biomes = case_when(
+      Biomes == "Mata Atlântica" ~ "Atlantic Forest",
+      Biomes == "Amazônia" ~ "Amazon",
+      TRUE ~ Biomes
+    )
+  )
+
+# Compute the centroids to annotate biomes
+biome_centroids <- st_centroid(biomes |> st_transform(crs = 4326))
+
+# Convert the centroids into a regular dataframe and extract their coordinates
+centroid_coords <- st_coordinates(biome_centroids)
+
+# Bind these coordinates to the original data
+biome_centers <- data.frame(Biomes = biomes$Biomes,
+                            Longitude = centroid_coords[, 1],
+                            Latitude = centroid_coords[, 2])
+
+# If you want to show patterns on the map. I left it here but at the end I did not use it
+# # Set the patterns
+biome_patterns <- c(
+  "Pantanal" = "stripe",
+  "Cerrado" = "crosshatch",
+  "Caatinga" = "circle",
+  "Pampa" = "crosshatch",
+  "Amazon" = "stripe",
+  "Atlantic Forest" = "stripe"
+)
+
+# # Adjust the angles and spacings for these patterns
+biome_pattern_angles <- c(
+  "Pantanal" = 90,
+  "Cerrado" = 45,
+  "Caatinga" = 0,
+  "Pampa" = 330,
+  "Amazon" = 270,
+  "Atlantic Forest" = 180
+)
+
+# Space
+biome_pattern_spacings <- c(
+  "Pantanal" = 0.02,
+  "Cerrado" = 0.02,
+  "Caatinga" = 0.02,
+  "Pampa" = 0.02,
+  "Amazon" = 0.02,
+  "Atlantic Forest" = 0.02
+)
+
+
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v8)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 0.7
+
+ggplot() + # if you want to see patterns on the plot remove comments geom_sf_pattern below
+  # geom_sf_pattern(
+  #   data = biomes,
+  #   aes(pattern = Biomes),
+  #   pattern_angle = biome_pattern_angles,
+  #   pattern_spacing = biome_pattern_spacings,
+  #   fill = NA,
+  #   pattern_density = 0.05,
+  #   color = "lightgray",
+  #   lwd = 0.001,
+  #   pattern_alpha = 0.05
+  # ) +
+  geom_sf(
+  data = biomes,
+  fill = NA,
+  color = "magenta",
+  lwd = 0.1,
+  alpha = 0.3
+  ) +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 0.50,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 0.50),
+    inherit.aes = FALSE,
+    color = "black",
+    fill = NA,
+    size = 0.1
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = biome_centers,
+    aes(x = Longitude, y = Latitude, label = Biomes),
+    color = "magenta",
+    size = 4,
+    alpha = 0.5
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 3,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    force = 1,
+    max.overlaps = 50,
+    nudge_x = 2.2,
+    nudge_y = 0,
+    segment.alpha = 0
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude") +
+  my_theme() +
+  scale_fill_manual(values = color_palette2) +
+  guides(fill = "none", pattern = "none") +
+  coord_sf()
+
+ggsave(
+  here("output", "populations", "figures", "k=8_lea_map.pdf"),
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 8. LEA global simple prior k=25
+
+Clean environment and memory
+```{r}
+rm(list=ls())
+gc()
+```
+
+```{r}
+k25run1 <- read_delim(
+  here("output", "global_brazil", "LEA", "global.snmf", "K25", "run4", "global_r4.25.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k25run1)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "global_brazil", "snps_sets", "global.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID 
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k25run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k25run1)
+
+head(k25run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k25run1 <- k25run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k25run1)
+```
+
+Import samples attributes
+
+```{r}
+global_loc <- readRDS(here("output", "global_brazil", "cities_loc.rds"))
+
+pops <- global_loc |>
+  dplyr::select(
+    pop, Latitude, Longitude
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k25run1$index <- seq_len(nrow(k25run1))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k25run1,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+Create colors
+```{r}
+library(RColorBrewer)
+
+# Get the maximum number of colors from three qualitative palettes
+set1 <- brewer.pal(brewer.pal.info["Set1", "maxcolors"], "Set1")
+set2 <- brewer.pal(brewer.pal.info["Paired", "maxcolors"], "Paired")
+set3 <- brewer.pal(brewer.pal.info["Dark2", "maxcolors"], "Dark2")
+
+# Combine them
+combined_colors <- c(set1, set2, set3)
+
+# Determine brightness of each color
+brightness <- sapply(combined_colors, function(col) {
+  grDevices::rgb2hsv(col2rgb(col))["v",]
+})
+
+# Classify as 'light' or 'dark'
+light_colors <- combined_colors[brightness > median(brightness)]
+dark_colors  <- combined_colors[brightness <= median(brightness)]
+
+# Create a function to alternate between two vectors
+alternate <- function(a, b) {
+  len <- min(length(a), length(b))
+  c(rbind(a[1:len], b[1:len]))
+}
+
+# Get the first 25 alternating colors
+final_colors <- alternate(light_colors, dark_colors)[1:25]
+
+# Function to determine if a color is light or dark
+is_light <- function(color) {
+  luma <- col2rgb(color)
+  luma <- 0.299 * luma[1,] + 0.587 * luma[2,] + 0.114 * luma[3,]
+  return(luma > 128)
+}
+
+
+light_colors <- final_colors[sapply(final_colors, is_light)]
+dark_colors <- final_colors[!sapply(final_colors, is_light)]
+
+interleave_colors <- function(a, b) {
+  len <- min(length(a), length(b))
+  result <- vector("character", length(a) + length(b))
+  result[seq(1, by=2, length.out=len)] <- a[seq_len(len)]
+  result[seq(2, by=2, length.out=len)] <- b[seq_len(len)]
+  if(length(a) > len) result[-(1:(2*len))] <- a[-seq_len(len)]
+  if(length(b) > len) result[-(1:(2*len))] <- b[-seq_len(len)]
+  return(result)
+}
+
+pallete1 <- interleave_colors(dark_colors, light_colors)
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:25)
+
+# Create named vector of colors
+palette2 <- setNames(pallete1, all_variables)
+
+# Display the colors
+barplot(rep(1, 25), col=pallete1, border="white", space=0)
+```
+
+
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# World data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter out Alaska (since it doesn't exist separately as "Alaska" in the ne_countries dataset).
+usa <- world %>%
+  filter(admin == "United States of America")
+
+# We'll identify Alaska by a bounding box approach:
+alaska_bbox <- st_bbox(c(xmin = -170, xmax = -129, ymin = 54, ymax = 71), crs = st_crs(usa))
+alaska_geom <- st_as_sfc(alaska_bbox)
+
+# Remove Alaska from USA geometry
+usa_without_alaska <- st_difference(usa, alaska_geom)
+
+# Now, remove the original USA from world and bind the modified USA
+world <- world %>%
+  filter(admin != "United States of America")
+
+world <- rbind(world, usa_without_alaska)
+
+# Filter for desired countries
+countries_corrected <- c(
+  "Mexico", "Australia", "Colombia", "Brazil", "United States of America", "Costa Rica", 
+  "Dominica", "Gabon", "Georgia", "Vietnam", "Saudi Arabia", "South Africa", 
+  "Uganda", "Portugal", "Pakistan", "Philippines", "Senegal", "Sri Lanka", 
+  "Saint Vincent and the Grenadines", "French Polynesia", "Trinidad and Tobago", 
+  "Turkey", "Cameroon"
+)
+
+selected_countries <- world %>%
+  filter(admin %in% countries_corrected)
+
+
+# The rest of your code
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+cols <- paste0("v", 1:25)
+
+ggplot() +
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  geom_sf(data = selected_countries, fill = "white") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1.5),
+    cols = cols,
+    color = NA
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.15,
+    force = 1,
+    max.overlaps = 50
+  ) + 
+  # geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+
+# ggsave(
+#   here("output", "global_brazil", "figures", "LEA_global_k25_pie_luciano.pdf"),
+#   width  = 12,
+#   height = 6,
+#   units  = "in",
+#   device = cairo_pdf
+# )
+
+```
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+df_long <- df_mean |>
+  gather(key = "segment", value = "value", v1:v8)
+
+# Calculate pie segments for plotting
+df_long <- df_long |>
+  group_by(pop) |>
+  arrange(pop, segment) |>
+  mutate(cum_value = cumsum(value),
+         total = sum(value),
+         end_angle = 2 * pi * cum_value / total,
+         start_angle = c(0, head(end_angle, -1))) |>
+  ungroup()
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 1.5
+
+ggplot() +
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  geom_sf(data = selected_countries, fill = "white") +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .1
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 1,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 1),
+    inherit.aes = FALSE,
+    color = NA,
+    fill = NA,
+    linewidth = 0.01
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.05,
+    force = 1,
+    max.overlaps = 50
+  ) + 
+  # geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+
+```
+
+### 6.1 Preparing the data for tess3Q_map_rasters
+
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 6.2 make a matrix of the Q values
+`
+
+Pull off the names of individuals and make a matrix of it:
+```{r}
+Q_matrix <- k25run1 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+### 6.3 Interpolate the Q-values by Kriging
+
+For this, we use the above variables in tess3r::tess3Q_map_rasters().  Note the
+use of namespace addressing for this function rather than loading the whole tess3r package
+with the library() command.
+
+```{r}
+print(ncol(Q_matrix) == length(palette2))
+```
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(palette2, length(palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k25run1 |>
+  dplyr::select(
+    -pop, -ind, -index,
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+
+
+### 6.4 Scaling and cleaning the genoscape_brick
+
+
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = palette2,
+  # alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r}
+ggplot() + 
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Note that if we wanted to add the actual sampling points to this (that are given
+in `long_lat_tibble`), we can use ggspatial's `geom_spatial_point()` function.
+```{r}
+cols <- paste0("v", 1:25)
+nudge_x <- 1.5
+ggplot() +
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude + nudge_x, y = Latitude, r = .75),
+    cols = cols,
+    color = NA
+  ) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .001
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.15,
+    force = 1,
+    max.overlaps = 50
+  ) + 
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+
+ggsave(
+  here("output", "global_brazil", "figures", "lea_global_k25_interpolated_pie_luciano.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+```{r, fig.height=8, fig.width=8, warning=FALSE}
+
+cols <- paste0("v", 1:25)
+
+# ggplot() +
+#   geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+#   layer_spatial(genoscape_rgba) +
+#   geom_spatial_point(data = long_lat_tibble,
+#                      mapping = aes(x = Long, y = Lat),
+#                      size = .2) +
+#   geom_scatterpie(
+#     data = df_mean,
+#     aes(x = Longitude, y = Latitude, r = .75),
+#     cols = cols,
+#     color = NA
+#   ) +
+#   geom_text_repel(
+#     data = df_mean,
+#     aes(x = Longitude, y = Latitude, label = pop),
+#     size = 1,
+#     box.padding = unit(.25, "lines"),
+#     direction = "both",
+#     max.iter = 2000,
+#     segment.size = 0.15,
+#     force = 1,
+#     max.overlaps = 50
+#   ) + 
+#   scale_fill_manual(values = palette2) +
+#   coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+#   geom_text(aes(
+#     x = seq(-135, 180, 45),
+#     y = -90,
+#     label = seq(-135, 180, 45)
+#   ),
+#   inherit.aes = FALSE,
+#   check_overlap = TRUE) +
+#   geom_text(aes(
+#     x = -180,
+#     y = seq(-50, 50, 25),
+#     label = seq(-50, 50, 25)
+#   ),
+#   inherit.aes = FALSE,
+#   check_overlap = TRUE) +
+#   labs(y = "Latitude", x = "Longitude") + 
+#   my_theme() +
+#   guides(fill = "none")
+
+# Adding a nudge value for the x-coordinate
+nudge_x <- 1.5
+
+ggplot() +
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  geom_sf(data = selected_countries, fill = "white") +
+  layer_spatial(genoscape_rgba) +
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .01
+  ) +
+  ggforce::geom_arc_bar(
+    data = df_long,
+    aes(
+      x0 = Longitude+ nudge_x,
+      y0 = Latitude,
+      r0 = 0,
+      r = 1,
+      start = start_angle,
+      end = end_angle,
+      fill = segment
+    ),
+    color = NA
+  ) +  # This will plot the pie segments without borders
+  ggforce::geom_circle(
+    data = df_mean,
+    aes(x0 = Longitude+ nudge_x, y0 = Latitude, r = 1),
+    inherit.aes = FALSE,
+    color = NA,
+    fill = NA,
+    size = 0.01
+  ) +  # This will plot the outer circle
+  geom_point(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude),
+    color = "black",
+    size = .3
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.05,
+    force = 1,
+    max.overlaps = 50
+  ) + 
+  # geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+ggsave(
+  here("output", "global_brazil", "figures", "lea_global_k25_interpolated_pie_luciano.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+## 9. fastStructure global simple prior k=25
+
+```{r}
+# Extract ancestry coefficients
+k25run2 <- read_delim(
+  here("output", "global_brazil", "faststructure", "run02", "simple.25.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k25run2)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "global_brazil", "snps_sets", "global.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID 
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k25run2 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k25run2)
+
+head(k25run2)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k25run2 <- k25run2 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k25run2)
+```
+
+Import samples attributes
+
+```{r}
+global_loc <- readRDS(here("output", "global_brazil", "cities_loc.rds"))
+
+pops <- global_loc |>
+  dplyr::select(
+    pop, Latitude, Longitude
+  )
+
+head(pops)
+```
+
+```{r}
+# Add an index column to Q_tibble
+k25run2$index <- seq_len(nrow(k25run2))
+
+# Perform the merge as before
+df1 <-
+  merge(
+    k25run2,
+    pops,
+    by.x = 2,
+    by.y = 1,
+    all.x = T,
+    all.y = F
+  ) |>
+  na.omit()
+
+# Order by the index column to ensure the order matches the original Q_tibble
+df1 <- df1[order(df1$index),]
+
+# Optionally, you can remove the index column if it's no longer needed
+df1$index <- NULL
+
+# Now the rows of df1 should be in the same order as the original Q_tibble
+head(df1)
+```
+
+Create colors
+```{r}
+library(RColorBrewer)
+
+# Get the maximum number of colors from three qualitative palettes
+set1 <- brewer.pal(brewer.pal.info["Set1", "maxcolors"], "Set1")
+set2 <- brewer.pal(brewer.pal.info["Paired", "maxcolors"], "Paired")
+set3 <- brewer.pal(brewer.pal.info["Dark2", "maxcolors"], "Dark2")
+
+# Combine them
+combined_colors <- c(set1, set2, set3)
+
+# Determine brightness of each color
+brightness <- sapply(combined_colors, function(col) {
+  grDevices::rgb2hsv(col2rgb(col))["v",]
+})
+
+# Classify as 'light' or 'dark'
+light_colors <- combined_colors[brightness > median(brightness)]
+dark_colors  <- combined_colors[brightness <= median(brightness)]
+
+# Create a function to alternate between two vectors
+alternate <- function(a, b) {
+  len <- min(length(a), length(b))
+  c(rbind(a[1:len], b[1:len]))
+}
+
+# Get the first 25 alternating colors
+final_colors <- alternate(light_colors, dark_colors)[1:25]
+
+# Function to determine if a color is light or dark
+is_light <- function(color) {
+  luma <- col2rgb(color)
+  luma <- 0.299 * luma[1,] + 0.587 * luma[2,] + 0.114 * luma[3,]
+  return(luma > 128)
+}
+
+
+light_colors <- final_colors[sapply(final_colors, is_light)]
+dark_colors <- final_colors[!sapply(final_colors, is_light)]
+
+interleave_colors <- function(a, b) {
+  len <- min(length(a), length(b))
+  result <- vector("character", length(a) + length(b))
+  result[seq(1, by=2, length.out=len)] <- a[seq_len(len)]
+  result[seq(2, by=2, length.out=len)] <- b[seq_len(len)]
+  if(length(a) > len) result[-(1:(2*len))] <- a[-seq_len(len)]
+  if(length(b) > len) result[-(1:(2*len))] <- b[-seq_len(len)]
+  return(result)
+}
+
+pallete1 <- interleave_colors(dark_colors, light_colors)
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:25)
+
+# Create named vector of colors
+palette2 <- setNames(pallete1, all_variables)
+
+# Change the order
+names(palette2) <- rev(names(palette2))
+palette2 <- palette2[order(names(palette2))]
+
+# Display the colors
+barplot(rep(1, 25), col=pallete1, border="white", space=0)
+```
+
+
+```{r, warning=FALSE}
+library(ggplot2)
+library(scatterpie)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrepel)
+library(Cairo)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# World data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter out Alaska (since it doesn't exist separately as "Alaska" in the ne_countries dataset).
+usa <- world %>%
+  filter(admin == "United States of America")
+
+# We'll identify Alaska by a bounding box approach:
+alaska_bbox <- st_bbox(c(xmin = -170, xmax = -129, ymin = 54, ymax = 71), crs = st_crs(usa))
+alaska_geom <- st_as_sfc(alaska_bbox)
+
+# Remove Alaska from USA geometry
+usa_without_alaska <- st_difference(usa, alaska_geom)
+
+# Now, remove the original USA from world and bind the modified USA
+world <- world %>%
+  filter(admin != "United States of America")
+
+world <- rbind(world, usa_without_alaska)
+
+# Filter for desired countries
+countries_corrected <- c(
+  "Mexico", "Australia", "Colombia", "Brazil", "United States of America", "Costa Rica", 
+  "Dominica", "Gabon", "Georgia", "Vietnam", "Saudi Arabia", "South Africa", 
+  "Uganda", "Portugal", "Pakistan", "Philippines", "Senegal", "Sri Lanka", 
+  "Saint Vincent and the Grenadines", "French Polynesia", "Trinidad and Tobago", 
+  "Turkey", "Cameroon"
+)
+
+selected_countries <- world %>%
+  filter(admin %in% countries_corrected)
+
+
+# The rest of your code
+# Calculate mean proportions for each population
+df_mean <- df1 |>
+  group_by(pop) |>
+  summarise(across(starts_with("v"), \(x) mean(x, na.rm = TRUE)), 
+            Longitude = mean(Longitude),
+            Latitude = mean(Latitude))
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+cols <- paste0("v", 1:25)
+
+ggplot() +
+  geom_sf(data = selected_countries, fill = "white") +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = 1.5),
+    cols = cols,
+    color = NA
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.15,
+    force = 1,
+    max.overlaps = 50
+  ) + 
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+
+ggsave(
+  here("output", "global_brazil", "figures", "fastStructure_global_k25_pie_luciano.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+### 9.1 Preparing the data for tess3Q_map_rasters
+
+Within Eric's fork of tess3r is a function called tess3Q_map_rasters.  It
+takes input from the objects we have above, but it takes that input as 
+matrices rather than data frames, etc. so there is a little finagling to be done.
+
+Make sure the lat longs are in the correct order and arrangement
+
+```{r}
+df2 <- df1 |>
+  dplyr::rename(
+    Long = Longitude,
+    Lat = Latitude
+  )
+
+long_lat_tibble <- df2 |>
+  dplyr::select(Long, Lat)
+
+
+long_lat_matrix <- long_lat_tibble |>
+  as.matrix()
+
+head(long_lat_matrix)
+```
+
+### 9.2 make a matrix of the Q values
+
+Calculate the mean for each column
+```{r}
+column_averages <- colMeans(Q_matrix)
+
+# To view the calculated averages
+print(column_averages)
+```
+
+Finding the top 10 values
+```{r}
+# Assuming Q_matrix is your matrix or data frame
+top_10_values <- apply(Q_matrix, 2, function(x) sort(x, decreasing = TRUE)[1:10])
+
+# To view the top 10 values for each column
+print(top_10_values)
+
+```
+
+
+Pull off the names of individuals and make a matrix of it
+```{r}
+Q_matrix <- k25run2 |>
+  dplyr::select(-ind, -pop, -index) |>
+  as.matrix()
+head(Q_matrix)
+```
+
+
+
+
+### 9.3 Interpolate the Q-values by Kriging
+
+For this, we use the above variables in tess3r::tess3Q_map_rasters().  Note the
+use of namespace addressing for this function rather than loading the whole tess3r package
+with the library() command.
+
+```{r}
+print(ncol(Q_matrix) == length(palette2))
+```
+Create brick
+```{r}
+genoscape_brick <- tess3r::tess3Q_map_rasters(
+  x = Q_matrix, 
+  coord = long_lat_matrix,  
+  map.polygon = selected_countries,
+  window = extent(selected_countries)[1:4],
+  # window = combined_extent,
+  resolution = c(600,600), # if you want more cells in your raster, set higher
+  # this next lines need to to be here, but don't do much...
+  col.palette = tess3r::CreatePalette(palette2, length(palette2)),
+  method = "map.max", 
+  interpol = tess3r::FieldsKrigModel(120),  
+  main = "Ancestry coefficients",
+  xlab = "Longitude", 
+  ylab = "Latitude", 
+  cex = .4
+)
+
+# after that, we need to add names of the clusters back onto this raster brick
+Q_tibble2 <- k25run2 |>
+  dplyr::select(
+    -pop, -ind, -index, v9, v10, v16, v20
+  )
+names(genoscape_brick) <- names(Q_tibble2)[]
+```
+
+
+That gives us a raster brick of Q-values associated with each cell in the raster, but
+those values are not always constrained between 0 and 1, so we have to massage them 
+a little bit in the next section.
+
+### 10.4 Scaling and cleaning the genoscape_brick
+
+This will squash the raster brick down to a single
+RGBA (i.e., four channels, red, green, blue and alpha) raster brick.
+```{r}
+genoscape_rgba <- genoscapeRtools::qprob_rando_raster(
+  TRB = genoscape_brick,
+  cols = palette2,
+  alpha_scale = 2.0,
+  abs_thresh = 0.0,
+  alpha_exp = 1.55,
+  alpha_chop_max = 255
+)
+
+crs(genoscape_rgba) <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+```
+
+We can easily plot this with the function layer_spatial from the ggspatial package:
+```{r}
+ggplot() + 
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  ggspatial::layer_spatial(genoscape_rgba) + 
+  my_theme() +
+  coord_sf()
+```
+
+Note that if we wanted to add the actual sampling points to this (that are given
+in `long_lat_tibble`), we can use ggspatial's `geom_spatial_point()` function.
+```{r}
+cols <- paste0("v", 1:25)
+
+ggplot() +
+  geom_sf(data = world, fill = NA, color = "black", lwd = 0.1) +
+  layer_spatial(genoscape_rgba) +
+  geom_spatial_point(data = long_lat_tibble,
+                     mapping = aes(x = Long, y = Lat),
+                     size = .2) +
+  geom_scatterpie(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, r = .75),
+    cols = cols,
+    color = NA
+  ) +
+  geom_text_repel(
+    data = df_mean,
+    aes(x = Longitude, y = Latitude, label = pop),
+    size = 1,
+    box.padding = unit(.25, "lines"),
+    direction = "both",
+    max.iter = 2000,
+    segment.size = 0.15,
+    force = 1,
+    max.overlaps = 50,
+    segment.color = "gray"
+  ) + 
+  scale_fill_manual(values = palette2) +
+  coord_sf(xlim = c(-180, 180), ylim = c(-50, 50)) +
+  geom_text(aes(
+    x = seq(-135, 180, 45),
+    y = -90,
+    label = seq(-135, 180, 45)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  geom_text(aes(
+    x = -180,
+    y = seq(-50, 50, 25),
+    label = seq(-50, 50, 25)
+  ),
+  inherit.aes = FALSE,
+  check_overlap = TRUE) +
+  labs(y = "Latitude", x = "Longitude") + 
+  my_theme() +
+  guides(fill = "none")
+
+ggsave(
+  here("output", "global_brazil", "figures", "fastStructure_global_k25_interpolated_pie_luciano.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+

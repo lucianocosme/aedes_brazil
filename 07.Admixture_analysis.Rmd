@@ -1,0 +1,1145 @@
+---
+title: "Aedes aegypti Brazil - Ancetry analysis with Admixture."
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+## 1. Load the libraries
+
+```{r load_libraries, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(colorout)
+library(dplyr)
+library(flextable)
+library(ggstatsplot)
+library(extrafont)
+library(stringr)
+library(flextable)
+library(officer)
+```
+
+For Admixture we can load the package in the cluster.
+
+```{bash, eval=FALSE}
+get clone https://github.com/NovembreLab/admixture.git
+
+# check it
+./admixture/releases/admixture_linux-1.3.0/admixture -h
+```
+
+Export path
+```{bash, eval=FALSE}
+# Add this in your script
+export PATH=$PATH:/gpfs/ycga/project/caccone/lvc26/albo_manuscript/admixture/admixture/releases/admixture_linux-1.3.0/
+
+# Then call admixture from anywhere
+admixture --help
+```
+
+```
+admixture --help                                                                                 255 ↵ ──(Fri,Aug25)─┘
+****                   ADMIXTURE Version 1.3.0                  ****
+****                    Copyright 2008-2015                     ****
+****           David Alexander, Suyash Shringarpure,            ****
+****                John  Novembre, Ken Lange                   ****
+****                                                            ****
+****                 Please cite our paper!                     ****
+****   Information at www.genetics.ucla.edu/software/admixture  ****
+
+
+  ADMIXTURE basic usage:  (see manual for complete reference)
+    % admixture [options] inputFile K
+
+  where:
+    K is the number of populations; and
+    inputFile may be:
+      - a PLINK .bed file
+      - a PLINK "12" coded .ped file
+
+  Output will be in files inputBasename.K.Q, inputBasename.K.P
+
+  General options:
+    -jX          : do computation on X threads
+    --seed=X     : use random seed X for initialization
+
+  Algorithm options:
+     -m=
+    --method=[em|block]     : set method.  block is default
+
+     -a=
+    --acceleration=none   |
+                   sqs<X> |
+                   qn<X>      : set acceleration
+
+  Convergence criteria:
+    -C=X : set major convergence criterion (for point estimation)
+    -c=x : set minor convergence criterion (for bootstrap and CV reestimates)
+
+  Bootstrap standard errors:
+    -B[X]      : do bootstrapping [with X replicates]
+```
+
+## 2. Admixture runs setup
+
+We created 3 sets of SNPs. One with intergenic SNPs that we called neutral. Then, one with pruning using r2 of 0.01 and other with r2 of 0.1. They have different number of SNPs but the same 237 samples.
+'
+```{bash get_summary_samples}
+awk '{print $1}' output/populations/2_maggie/brazil_2018.fam | sort | uniq -c | awk '{print $2}' 
+```
+
+Some of these sampling localities are very close to each other but we will consider to count the total number of sample groups.
+
+```{bash count_samppling_localities}
+awk '{print $1}' output/populations/2_maggie/brazil_2018.fam | sort | uniq -c | wc -l
+```
+
+
+First we need to test if our command will create the directories we want. We can use `echo` instead of `mkdir` to test
+it.
+
+```{bash test_script_gen_dirs1, cache=TRUE, eval=FALSE}
+for i in $(seq -w 1 10)
+do
+  echo run$i
+done             # it works
+```
+
+Change echo to `mkdir` and create all directories. First option with seq using -w flag to have leading zeros (check "`man seq`", -w, --equal-width).
+
+```{bash make_dirs, eval=FALSE}
+for i in $(seq 1 2)
+do
+  mkdir run$i
+done
+```
+
+Next we have to create the script to run Admixture. First, lets test the loop using k=1 to k=5 and 5 runs for each k. Note that for runs we use seq -w (we get run01, run02, etc., when we have 10 runs). For K, we don't want the leading zeros, so we don't use the -w flag.
+
+```{bash test_loop_admixture_script}
+for run in $(seq 1 2); do
+    for k in $(seq 1 2); do
+        echo "run= $run k= $k seed= $run"
+    done
+done
+```
+
+
+Generate script for Admixture. We will use 2000 bootstraps, and cv=10.
+
+```{bash admixture_script_example, eval=FALSE}
+admixture file.bed $name -j10 # we will run with the default settings (200 bootstraps) -j10 means we will run with 10 threads, 200 bootstraps
+admixture file.bed $name -j20 --cv=10 --B2000 # we will run with 1000 bootstraps, cross-validation 10, using 20 threads
+
+```
+
+Test loop to make script for `dsq`.
+
+
+```{bash test-loop_dsq1, eval=TRUE}
+# 2000 bootstraps and cv 10
+for run in $(seq 1 2); do
+    for k in $(seq 1 2); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/run$run; \
+export PATH=$PATH:/gpfs/ycga/project/caccone/lvc26/albo_manuscript/admixture/admixture/releases/admixture_linux-1.3.0/; \
+admixture -s $run --cv=50 -B2000 -j20 -C 0.0001 -c 10 /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/brazil_2018.bed $k | tee log_k$k.txt"
+    done
+done | head
+# admixture -s 1 --cv=10 -B2000 -j20 -C 0.0001 -c 10 -l 500 -e 0.1
+```
+
+Now we can generate the full script for dsq.
+
+### 2.1 Brazil set
+
+We tested Admixture with several runs for each data set. Admixture always returned k=5 or k=6 as the number of ancestral populations. We will do one more run with the same SNP sets we used for all algorithms.
+```{bash, eval=FALSE}
+for run in $(seq 1); do
+    for k in $(seq 1 35); do
+        echo "cd /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/run$run; \
+export PATH=$PATH:/gpfs/ycga/project/caccone/lvc26/albo_manuscript/admixture/admixture/releases/admixture_linux-1.3.0/; \
+admixture -s $run --cv=50 -B2000 -j20 -C 0.0001 -c 10 /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/brazil_2018.bed $k | tee log_k$k.txt"
+    done
+done > dsq1.txt
+```
+
+Generate the dsq batch files on the cluster.
+
+```{bash, eval=FALSE}
+module load dSQ/1.05
+# make script
+# https://docs.ycrc.yale.edu/clusters-at-yale/job-scheduling/dsq/
+#
+# create dsq file
+dsq \
+--job-file dsq1.txt \
+--output /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/logs/admix-%A_%3a-%N.txt \
+--mem-per-cpu 1g \
+--time=168:00:00 \
+--cpus-per-task=10 \
+--mail-type ALL \
+--job-name admixture \
+--batch-file admixture.sh \
+--partition=week
+```
+
+
+## 3. Run Admixture
+
+### 3. Brazil
+
+```{bash, eval=FALSE}
+# create a directory for the logs
+cd /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil
+mkdir logs
+# submit
+sbatch admixture.sh
+
+# check status
+dsqa -j 7419889  # all completed
+```
+
+Run autopsy (if if did not finished)
+```{bash, eval=FALSE}
+# simple, all completed
+# logistic, some jobs timed out
+# get the jobs we need to re-run
+dsqa -j 7184445 -f dsq1.txt -s PREEMPTED > rerun_jobs.txt; wc -l rerun_jobs.txt 
+
+# create dsq file
+dsq \
+--job-file rerun_jobs.txt \
+--output /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/logs/admix-%A_%3a-%N.txt \
+--mem-per-cpu 1g \
+-t 120:00:00 \
+--cpus-per-task=10 \
+--mail-type ALL \
+--job-name admixture2 \
+--batch-file admixture2.sh \
+--partition=week
+#
+# check status
+dsqa -j  # check here
+```
+
+
+## 4. Get the cross validation values
+
+### 4.1 Brazil
+
+Collect the cross validation information from the all the log files. We have to do it for each run. We need to get the CV and the K from each log file.
+
+```{bash check_log_files, eval=FALSE}
+# navigate to the data directory
+cd /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil
+# let's check the log files using grep. We need to get the line with the CV values. We can grep CV
+grep CV run1/log*.txt | head
+```
+ 
+Make loop to get summary
+```{bash, eval=FALSE}
+cd /gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil
+#
+for i in $(ls -1 run1/log*.txt); do
+    grep -H CV $i | sed 's|run| |' | sed 's|/log_k| |' | sed 's|.txt:CV error (K=| |' | sed 's|):||' | sed 's|_||' | awk '{print $1, $3, $4}'
+done > cross_validation_brazil_set.txt
+```
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/cross_validation_brazil_set.txt /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/populations/admixture/brazil/
+```
+
+Import the cross validation values into R
+
+```{r import_cross_validation_values_in_r}
+cross_val_default <-
+  read_delim(
+    here(
+      "output", "populations", "admixture", "brazil", "cross_validation_brazil_set.txt"
+    ),
+    col_names      = FALSE,
+    show_col_types = FALSE,
+    col_types      = "cin"
+  ) |>
+  rename(
+    run = 1,
+    k   = 2,
+    cv  = 3
+  )
+```
+
+Lets make cv plot for the default run
+```{r plot_cv_default_run}
+cross_val_default |>
+  ggplot() +
+  geom_line(
+    aes(
+      x        = k,
+      y        = cv
+    ),
+    linewidth  = .75,
+    color = "magenta"
+  ) +
+  labs(
+    x        = "K",
+    y        = "Cross-validation error",
+    title    = "Admixture Cross-validation neutral SNPs",
+    subtitle = "2000 bootstraps and cv = 10 ",
+    caption  = "algorithm runs for choices of K ranging from 1 to 35"
+  ) +
+  hrbrthemes::theme_ipsum(
+    base_family      = "",
+    axis_text_size   = 12,
+    axis_title_size  = 14,
+    plot_margin      = margin(10, 10, 10, 10),
+    grid             = TRUE,
+    grid_col         = "#fabbe2"
+  ) +
+  theme(
+    panel.grid.major = element_line(
+      linetype       = "dashed",
+      linewidth      = 0.2,
+    ),
+    legend.title     = element_text(
+        size           = 14,
+        face           = "bold"
+      ),
+    panel.grid.minor = element_line(
+      linetype       = "dashed",
+      linewidth      = 0.2
+    )
+  )
+#
+# save the plot
+ggsave(
+  here(
+    "output", "populations","figures", "admixuture_brazil_run_k1_k35.pdf"
+  ),
+  width  = 8,
+  height = 6,
+  units  = "in"
+)
+```
+
+Now we can find the K with the lowest cross-validation error
+```{r check_k_with_smallest_cv_values}
+cross_val_default |>
+  summarize(
+    LowestCVerror = min(
+      cv,
+      na.rm       = TRUE
+    )
+  ) -> cv_min_default
+
+cross_val_default |>
+  slice(
+    which.min(
+      cv
+    )
+  ) |>
+  select(
+    run, k, cv
+  ) |>
+  rename(
+    LowestCVerror = 3
+  ) -> k_with_lowest_cv_default
+
+
+k_with_lowest_cv_default
+```
+k=11
+
+## 5. Structure plots
+
+### 5.1 Brazil set
+
+Download the data
+```{bash, eval=FALSE}
+rsync -chavzP --stats \
+--include='*/' \
+--include='*.Q' \
+--include='*.txt' \
+--exclude='*' \
+lvc26@mccleary.ycrc.yale.edu:/gpfs/ycga/project/caccone/lvc26/admixture/aegypti/brazil/* \
+/Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/populations/admixture/brazil
+```
+
+Check the downloaded data
+```{bash, eval=FALSE}
+ls -1 output/populations/admixture/brazil/run1/*Q* | tail
+```
+
+#### 5.1.1 Create plot with Q matrix k=8 to compare with fastStructure
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k8run1 <- read_delim(
+  here("output", "populations", "admixture", "brazil", "run1", "brazil_2018.8.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k8run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "brazil_2018.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k8run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k8run1)
+
+head(k8run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k8run1 <- k8run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k8run1)
+```
+
+Import sample locations
+```{r}
+cities <- readRDS(here("output", "populations", "cities.rds"))
+head(cities)
+```
+
+```{r}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Melt the data frame for plotting
+Q_melted <- k8run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(cities, by = c("pop" = "pop"))
+
+# # Create a combined variable for Region and Country
+# Q_joined <- Q_joined |>
+#   mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(region, state, city, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(region) |>
+  mutate(label = ifelse(row_number() == 1, as.character(region), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(region = unique(Q_ordered$region))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$region, function(rc)
+    max(which(Q_ordered$region == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, city, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, city, biome, region, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.05)
+# 
+
+color_palette <- c(
+  "v1" = "#AE9393",
+  "v2" = "#F49AC2",
+  "v3" = "#7FFF00",
+  "v4" = "blue",
+  "v5" = "red",
+  "v6" = "#FFB347",
+  "v7" = "#FFFF99",
+  "v8" = "brown"
+)
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:8)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=8.\n Admixture for k1:35 with 8,481 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# save it
+ggsave(
+  here("output", "populations", "figures", "admixture_brazil_k8.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+We see more admixture across the sampling localities than we saw with fastStructure simple prior. We still see five major clusters separated by geographical regions.
+
+
+
+
+#### 5.1.1 Create plot with Q matrix k=11
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k11run1 <- read_delim(
+  here("output", "populations", "admixture", "brazil", "run1", "brazil_2018.11.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k11run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "brazil_2018.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k11run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k11run1)
+
+head(k11run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k11run1 <- k11run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k11run1)
+```
+
+Import sample locations
+```{r}
+cities <- readRDS(here("output", "populations", "cities.rds"))
+head(cities)
+```
+
+```{r}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Melt the data frame for plotting
+Q_melted <- k11run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(cities, by = c("pop" = "pop"))
+
+# # Create a combined variable for Region and Country
+# Q_joined <- Q_joined |>
+#   mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(region, state, city, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(region) |>
+  mutate(label = ifelse(row_number() == 1, as.character(region), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(region = unique(Q_ordered$region))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$region, function(rc)
+    max(which(Q_ordered$region == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, city, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, city, biome, region, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.05)
+# 
+
+color_palette <- c(
+  "v1" = "#AE9393",
+  "v2" = "red",
+  "v3" = "brown",
+  "v4" = "blue",
+  "v5" = "gray",
+  "v6" = "magenta",
+  "v7" = "#FFB347",
+  "v8" = "#7FFF00",
+  "v9" = "cyan",
+  "v10" = "#F49AC2",
+  "v11" = "#FFFF99"
+)
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:11)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=11.\n Admixture for k1:35 with 8,481 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# save it
+ggsave(
+  here("output", "populations", "figures", "admixture_brazil_k11.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+We see more admixture across the sampling localities than we saw with fastStructure simple prior. We still see five major clusters separated by geographical regions.
+
+
+
+
+#### 5.1.1 Create plot with Q matrix k=5
+
+Make plot
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "admixture", "brazil", "run1", "brazil_2018.5.Q"),
+  delim = " ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "populations", "snps_sets", "brazil_2018.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("v", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+head(sampling_loc)
+```
+
+```{r}
+source(
+  here(
+    "scripts", "analysis", "my_theme3.R"
+  )
+)
+
+# Melt the data frame for plotting
+Q_melted <- k5run1 |>
+  pivot_longer(
+    cols = -c(ind, pop),
+    names_to = "variable",
+    values_to = "value"
+  )
+# Join with sampling_loc to get sampling localities
+Q_joined <- Q_melted |>
+  left_join(cities, by = c("pop" = "pop"))
+
+# # Create a combined variable for Region and Country
+# Q_joined <- Q_joined |>
+#   mutate(Region_Country = interaction(Region, Country, sep = "_"))
+
+# Order the combined variable by Region and Country, then by individual
+Q_ordered <- Q_joined |>
+  arrange(region, state, city, ind) |>
+  mutate(ind = factor(ind, levels = unique(ind)))  # Convert ind to a factor with levels in the desired order
+
+# Add labels: country names for the first individual in each country, NA for all other individuals
+Q_ordered <- Q_ordered |>
+  group_by(region) |>
+  mutate(label = ifelse(row_number() == 1, as.character(region), NA))
+
+# Group by individual and variable, calculate mean ancestry proportions
+Q_grouped <- Q_ordered |>
+  group_by(ind, variable) |>
+  summarise(value = mean(value), .groups = "drop")
+
+# Create a data frame for borders
+borders <-
+  data.frame(region = unique(Q_ordered$region))
+
+# Add the order of the last individual of each country to ensure correct placement of borders
+borders$order <-
+  sapply(borders$region, function(rc)
+    max(which(Q_ordered$region == rc))) + 0.5  # Shift borders to the right edge of the bars
+
+# Select only the first occurrence of each country in the ordered data
+label_df <- Q_ordered |>
+  filter(!is.na(label)) |>
+  distinct(label, .keep_all = TRUE)
+
+# Create a custom label function
+label_func <- function(x) {
+  labels <- rep("", length(x))
+  labels[x %in% label_df$ind] <- label_df$label
+  labels
+}
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) + 0)
+
+# Calculate the position of population labels and bars
+pop_labels <- Q_ordered |>
+  mutate(Name = paste(pop, city, sep = " - ")) |>
+  group_by(pop) |>
+  slice_head(n = 1) |>
+  ungroup() |>
+  dplyr::select(ind, city, biome, region, Name) |>
+  mutate(pos = as.numeric(ind))  # calculate position of population labels
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+
+# Calculate the position of lines
+border_positions <- Q_ordered |>
+  group_by(region) |>
+  summarise(pos = max(as.numeric(ind)) - 1)
+
+
+pop_labels_bars <- pop_labels |>
+  mutate(pos = as.numeric(ind)  - .5)
+
+# Function to filter and normalize data
+normalize_data <- function(df, min_value) {
+  df |>
+    filter(value > min_value) |>
+    group_by(ind) |>
+    mutate(value = value / sum(value))
+}
+
+# Use the function
+Q_grouped_filtered <- normalize_data(Q_grouped, 0.1)
+# 
+
+color_palette <- c(
+  "v1" = "red",
+  "v2" = "#7FFF00",
+  "v3" = "#FFFF99",
+  "v4" = "blue",
+  "v5" = "#F49AC2"#,
+  # "v6" = "#AE9393",
+  # "v7" = "#FFB347",
+  # "v8" = "brown"
+)
+
+# Generate all potential variable names
+all_variables <- paste0("v", 1:5)
+
+# Map each variable to a name
+color_mapping <- data.frame(variable = all_variables,
+                            color = names(color_palette))
+
+# Merge with Q_grouped_filtered
+Q_grouped_filtered <- merge(Q_grouped_filtered, color_mapping, by = "variable")
+
+# Create the plot
+ggplot(Q_grouped_filtered, aes(x = as.factor(ind), y = value, fill = color)) +
+  geom_bar(stat = 'identity', width = 1) +
+  geom_vline(
+    data = pop_labels_bars,
+    aes(xintercept = pos),
+    color = "#2C444A",
+    linewidth = .2
+  ) +
+  geom_text(
+    data = pop_labels,
+    aes(x = as.numeric(ind), y = 1, label = Name),
+    vjust = 1.5,
+    hjust = 0,
+    size = 2,
+    angle = 90,
+    inherit.aes = FALSE
+  ) +
+  my_theme() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      size = 12
+    ),
+    legend.position = "none",
+    plot.margin = unit(c(3, 0.5, 0.5, 0.5), "cm")
+  ) +
+  xlab("Admixture matrix") +
+  ylab("Ancestry proportions") +
+  labs(caption = "Each bar represents the ancestry proportions for an individual for k=5.\n Admixture for k1:35 with 8,481 SNPs.") +
+  scale_x_discrete(labels = label_func) +
+  scale_fill_manual(values = color_palette) +
+  expand_limits(y = c(0, 1.5))
+
+# save it
+ggsave(
+  here("output", "populations", "figures", "admixture_brazil_k5.pdf"),
+  width  = 12,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+We see more admixture across the sampling localities than we saw with fastStructure simple prior. We still see five major clusters separated by geographical regions.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,1421 @@
+---
+title: "Aedes aegypti in Brazil - FST estimates"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+```{r libraries, message=FALSE, results='hide'}
+library(StAMPP)
+library(ggplot2)
+library(tidyverse)
+library(adegenet)
+library(here)
+library(flextable)
+library(officer)
+library(reshape2)
+library(dplyr)
+library(tidyr)
+library(geosphere)
+library(flextable)
+library(officer)
+library(dartR)
+library(MASS)
+library(Cairo)
+``` 
+
+We can use different data sets to run our fst estimates.
+
+```{r}
+# Remove all objects from the environment
+rm(list = ls())
+
+# Run the garbage collector to free up memory
+gc()
+
+```
+
+
+
+## 1. Brazil - samples from this study only
+
+We can estimate Fst using only the neutral set of SNPs for populations with at least 4 individuals.
+
+Create list of populations
+```{bash}
+awk '{print $1}' output/populations/snps_sets/brazil_2018.fam | sort | uniq -c | awk '{print $2, $1}' | awk '$2 >= 4 {print}' | awk '{print $1}' > output/fst/pops_4fst.txt;
+head  output/fst/pops_4fst.txt;
+wc -l output/fst/pops_4fst.txt
+```
+
+We have 33 populations with 4 or more mosquitoes. We can convert to raw format and subset the bed file
+
+```{bash}
+plink \
+--allow-extra-chr \
+--keep-allele-order \
+--bfile output/populations/snps_sets/brazil_2018 \
+--keep-fam output/fst/pops_4fst.txt \
+--recodeA \
+--out output/fst/brazil \
+--silent;
+grep 'samples\|variants\|remaining' output/fst/brazil.log
+```
+
+Look at https://rdrr.io/cran/StAMPP/man/stamppFst.html for details of Fst estimations
+
+```{r, eval=FALSE, message=FALSE, results='hide'}
+brazil <-
+  read.PLINK(
+    here(
+      "output", "fst", "brazil.raw"
+    ),
+    quiet = FALSE,
+    chunkSize = 1000,
+    parallel = require("parallel"),
+    n.cores = 4
+  )
+
+summary(brazil)
+```
+
+Now lets convert the genlight object to Stampp format, and estimate pairwide Fst values
+
+The command below would also work, but you can simplify it and put only the numbers:
+stamppFst_2 <- stamppFst(stamppFst, nboots=100,  percent=95 + nclusters==10)
+
+This chunk will take a couple minutes to run.
+```{r, eval=FALSE}
+# convert
+brazil_2 <- stamppConvert(brazil, type="genlight")
+
+# run stampp. If you want to run with bootstraps and nclusters use the HPC. It will run out of memory on a 32Gb laptop
+brazil_3 <- stamppFst(brazil_2, 1, 95, 1)
+```
+
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  brazil_3, here(
+    "output", "fst", "brazil_stamppFst.rds"
+  )
+)
+```
+
+To load it
+```{r}
+brazil_3 <- readRDS(
+  here(
+    "output", "fst", "brazil_stamppFst.rds"
+  )
+)
+```
+
+
+Now lets look at the object
+
+```{r}
+summary(brazil_3)
+```
+
+If you want you can save the fst values as csv.
+```{r}
+# Convert to data frame
+brazil_df <- data.frame(brazil_3)
+
+# Save it
+write.csv(brazil_df, file = here("output", "fst", "brazil_df.csv"))
+```
+
+Check the Fst values
+```{r}
+head(brazil_df)
+```
+
+We will convert the data into a matrix.
+```{r}
+aa <- as.matrix(brazil_df)
+aa[upper.tri(aa)] <- t(aa)[upper.tri(t(aa))]
+head(aa)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+
+
+# Arrange by region 
+sampling_loc <- sampling_loc |>
+  dplyr::arrange(
+    region, biome
+  ) |>
+  dplyr::filter(!(pop %in% c("VAS", "ITB", "ITP", "MAG", "PQM", "PQN", "PQS","CGO", "IGU", "TER")))
+
+# Check it
+head(sampling_loc)
+```
+
+Order
+```{r}
+order_pops <- as.vector(sampling_loc$pop)
+order_pops
+```
+
+Lets check if the matrix is symmetric.
+```{r}
+isSymmetric(aa)
+```
+
+
+Now lets order the matrix using poporder. We will also add NA on the upper left side of the matrix.
+```{r}
+aa <- aa[order_pops, order_pops]
+aa[lower.tri(aa)] <- NA
+```
+
+
+Now we have to convert the matrix to a data frame to plot it with ggplot.
+
+```{r}
+pairfst.long <- melt(aa)
+summary(pairfst.long)
+```
+
+Now lets plot the data with ggplot.
+You can click in the little square on the top left of the plot to open it on a new window. It will have the right proportions.
+```{r, fig.width=9, fig.height=8}
+pairfst.f <- ggplot(pairfst.long, aes(Var1, Var2)) +
+  geom_tile(aes(fill = value), colour = "white") +
+  scale_fill_gradient(
+    low = "white",
+    high = "#71b6ff",
+    name = "Fst",
+    na.value = "white",
+    limits = c(0, 0.5)
+  ) +
+  scale_x_discrete(position = "top") +
+  theme_bw() +
+  geom_text(aes(label = ifelse(
+    is.na(value), "", formatC(value, digits = 2, format = "f")
+  )), size = 3) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.y = element_text(hjust = 0)
+  )
+pairfst.f
+```
+
+
+```{r}
+ggsave(
+  filename = here("output", "fst", "fst_matrix_brazil.pdf"),
+  pairfst.f,
+  width = 10,
+  height = 10,
+  units = "in"
+)
+```
+
+Remove NAs and rename columns
+```{r}
+# remove NAs
+fst2 <-
+  pairfst.long |>
+  drop_na()
+
+# rename columns
+fst2 <-
+  fst2 |>
+  dplyr::rename(pop1 = 1,
+         pop2 = 2,
+         fst  = 3)
+
+
+# Split the data into two data frames, one for pop1 and one for pop2
+df_pop1 <- fst2 |>
+  dplyr::select(pop = pop1, fst)
+df_pop2 <- fst2 |>
+  dplyr::select(pop = pop2, fst)
+
+# Combine the two data frames
+df_combined <- bind_rows(df_pop1, df_pop2)
+
+# Calculate the mean fst for each population
+mean_fst <- df_combined |>
+  group_by(pop) |>
+  summarise(mean_fst = mean(fst))
+
+print(mean_fst)
+```
+
+Merge
+```{r}
+fst3 <-
+  sampling_loc |>
+  left_join(
+    mean_fst,
+    by = c("pop" = "pop")
+  ) |>
+  drop_na() |>
+  dplyr::select(
+    -state
+  )
+
+# # Remove " Asia" from the Region2 column
+# # fst3$Region2 <- gsub(" Asia", "", fst3$Region2)
+# 
+# # Rename the Region2 column to Region
+# fst3 <- fst3 |>
+#   # dplyr::rename(Region = Region2)
+# 
+# # check output
+# head(fst3)
+```
+
+Mean by region
+```{r}
+# Group by Region and calculate the mean_fst by Region
+region_means <- fst3 |>
+  group_by(region) |>
+  summarize(mean_fst_by_region = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_region column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(region_means, by = "region")
+
+# Print the modified fst3 tibble
+print(fst3)
+```
+
+Mean by biome
+```{r}
+# Group by Country and calculate the mean_fst by Country
+biome_means <- fst3 |>
+  group_by(biome) |>
+  summarize(mean_fst_by_biome = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_country column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(biome_means, by = "biome")
+
+# Print the modified fst3 tibble
+print(fst3)
+
+```
+
+
+```{r}
+fst4 <- fst3 |>
+  dplyr::select(
+    region, mean_fst_by_region, biome, mean_fst_by_biome, city, pop, mean_fst,
+  )
+
+fst4 <- fst4 |>
+  arrange(
+    region, biome, city
+  )
+
+# Round
+fst4 <- fst4 |>
+  mutate_if(is.numeric, ~ round(., 2))
+
+head(fst4)
+```
+
+Fst by region
+```{r}
+fst5 <- fst4 |>
+  dplyr::select(region, mean_fst_by_region, biome, mean_fst_by_biome,  city, pop, mean_fst ) |>
+  dplyr::arrange(region, biome)
+
+
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- flextable(fst5) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 1. Fst estimates for Brazil by regions.",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+```{r}
+# Initialize Word document
+doc <- 
+  read_docx() |>
+  body_add_flextable(value = flex_table)
+
+# Define the output path with 'here' library
+output_path <- here(
+  "output",
+  "fst", 
+  "fst_brazil_SNPS_region_biome.docx"
+  )
+
+# Save the Word document
+print(doc, target = output_path)
+```
+
+Fst by biome
+```{r}
+fst6 <- fst4 |>
+  dplyr::select(biome, mean_fst_by_biome, city, pop, mean_fst) |>
+  arrange(biome)
+
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- flextable(fst6) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 2. Fst estimates for Brazil by biomes",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+```{r}
+# Initialize Word document
+doc <- 
+  read_docx() |>
+  body_add_flextable(value = flex_table)
+
+# Define the output path with 'here' library
+output_path <- here(
+  "output",
+  "fst", 
+  "fst_brazil_SNPS_biome.docx"
+  )
+
+# Save the Word document
+print(doc, target = output_path)
+```
+
+### 1.1 Isolation by distance
+
+
+```{bash}
+plink \
+--keep-allele-order \
+--bfile output/populations/snps_sets/brazil_2018 \
+--recodeA \
+--make-bed \
+--out output/fst/brazil_ibd \
+--silent;
+grep 'samples\|variants\|remaining' output/fst/brazil_ibd.log
+```
+
+Import the data
+
+```{r, message=FALSE, results='hide'}
+brazil <-
+  read.PLINK(
+    here(
+      "output", "fst", "brazil_ibd.raw"
+    ),
+    quiet = FALSE,
+    chunkSize = 1000,
+    parallel = require("parallel"),
+    n.cores = 4
+  )
+
+summary(brazil)
+```
+
+Now lets convert the genlight object to Stampp format, and estimate pairwide Fst values
+
+The command below would also work, but you can simplify it and put only the numbers:
+stamppFst_2 <- stamppFst(stamppFst, nboots=100,  percent=95 + nclusters==10)
+
+This chunk will take a couple minutes to run.
+```{r, eval=FALSE}
+# convert
+brazil_2 <- stamppConvert(brazil, type="genlight")
+
+# run stampp
+brazil_3 <- stamppFst(brazil_2, 1, 95, 10)
+```
+
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  brazil_3, here(
+    "output", "fst", "brazil_stamppFst2.rds"
+  )
+)
+```
+
+To load it
+```{r}
+brazil_3 <- readRDS(
+  here(
+    "output", "fst", "brazil_stamppFst2.rds"
+  )
+)
+```
+
+
+If you want you can save the fst values as csv.
+```{r}
+# Convert to data frame
+brazil_df <- data.frame(brazil_3)
+```
+
+Check the Fst values
+```{r}
+head(brazil_df)
+```
+
+We will convert the data into a matrix.
+```{r}
+aa <- as.matrix(brazil_df)
+aa[upper.tri(aa)] <- t(aa)[upper.tri(t(aa))]
+head(aa)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+
+
+# Arrange by region 
+sampling_loc <- sampling_loc |>
+  dplyr::arrange(
+    region, biome
+  ) |>
+  dplyr::filter(!(pop %in% c("VAS", "ITB", "ITP", "MAG", "PQM", "PQN", "PQS","CGO", "IGU", "TER")))
+
+# Check it
+head(sampling_loc)
+```
+
+Order
+```{r}
+order_pops <- as.vector(sampling_loc$pop)
+order_pops
+```
+
+Lets check if the matrix is symmetric.
+```{r}
+isSymmetric(aa)
+```
+
+
+Now lets order the matrix using poporder. We will also add NA on the upper left side of the matrix.
+```{r}
+aa <- aa[order_pops, order_pops]
+aa[lower.tri(aa)] <- NA
+```
+
+
+Now we have to convert the matrix to a data frame to plot it with ggplot.
+
+```{r}
+pairfst.long <- melt(aa)
+summary(pairfst.long)
+```
+
+
+
+Remove NAs and rename columns
+```{r}
+# remove NAs
+fst2 <-
+  pairfst.long |>
+  drop_na()
+
+# rename columns
+fst2 <-
+  fst2 |>
+  dplyr::rename(pop1 = 1,
+         pop2 = 2,
+         fst  = 3)
+
+
+# Split the data into two data frames, one for pop1 and one for pop2
+df_pop1 <- fst2 |>
+  dplyr::select(pop = pop1, fst)
+df_pop2 <- fst2 |>
+  dplyr::select(pop = pop2, fst)
+
+# Combine the two data frames
+df_combined <- bind_rows(df_pop1, df_pop2)
+
+# Calculate the mean fst for each population
+mean_fst <- df_combined |>
+  group_by(pop) |>
+  summarise(mean_fst = mean(fst))
+
+print(mean_fst)
+```
+
+Merge
+```{r}
+fst3 <-
+  sampling_loc |>
+  left_join(
+    mean_fst,
+    by = c("pop" = "pop")
+  ) |>
+  drop_na() |>
+  dplyr::select(
+    -state
+  )
+```
+
+Mean by region
+```{r}
+# Group by Region and calculate the mean_fst by Region
+region_means <- fst3 |>
+  group_by(region) |>
+  summarize(mean_fst_by_region = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_region column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(region_means, by = "region")
+
+# Print the modified fst3 tibble
+print(fst3)
+```
+
+Mean by country
+```{r}
+# Group by Country and calculate the mean_fst by Country
+biome_means <- fst3 |>
+  group_by(biome) |>
+  summarize(mean_fst_by_biome = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_country column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(biome_means, by = "biome")
+
+# Print the modified fst3 tibble
+print(fst3)
+```
+
+To make scatter plot
+```{r}
+# Order the aggregated data
+aggregated_data <- fst3[order(fst3$mean_fst), ]
+
+# Assign a numeric index for plotting
+aggregated_data$index <- 1:nrow(aggregated_data)
+
+# Fit a linear model
+lm_fit <- lm(mean_fst ~ index, data = aggregated_data)
+
+# Predicted values from the linear model
+aggregated_data$fitted_values <- predict(lm_fit)
+
+ggplot(aggregated_data, aes(x = index, y = mean_fst)) +
+  geom_point(aes(color = biome), size = 3, shape = 16) + # shape = 16 for solid circle
+  geom_line(aes(y = fitted_values), color = "black") +  # Fitted line
+  labs(
+    title = "Mean Fst",
+    x = "Populations",
+    y = "Mean Fst Value",
+    color = "biome"
+  ) +
+  scale_x_continuous(breaks = aggregated_data$index, labels = aggregated_data$pop) +
+  scale_color_manual(values = c("#ffb97f", "#ccadff", "#52ff02", "#75ffff", "#ff1e00", "#e333e3")) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position = "top")
+
+
+ggsave(
+  filename = here("output", "fst", "figures", "fst_scatter_brazil.pdf"),
+  width = 7,
+  height = 5,
+  units = "in"
+)
+```
+
+Estimate distances
+```{r}
+# Grab the population names from the matrix aa
+populations_with_fst <- colnames(aa)
+
+# Create an empty matrix to store the distances
+n <- nrow(sampling_loc)
+distance_matrix <- matrix(0, n, n)
+rownames(distance_matrix) <- sampling_loc$pop
+colnames(distance_matrix) <- sampling_loc$pop
+
+# Calculate the distances
+for (i in 1:n) {
+  for (j in 1:n) {
+    if (i != j) {
+      coord1 <- c(sampling_loc$longitude[i], sampling_loc$latitude[i])
+      coord2 <- c(sampling_loc$longitude[j], sampling_loc$latitude[j])
+      distance_matrix[i, j] <- distHaversine(coord1, coord2) / 1000 # distance in km
+    }
+  }
+}
+
+# Print the distance matrix
+head(distance_matrix)
+```
+
+
+Compare distance and FST
+
+```{r}
+# Fill lower triangle of 'aa' matrix
+aa[lower.tri(aa)] <- t(aa)[lower.tri(aa)]
+
+# Fill diagonal with 0 (or another value that makes sense in your context)
+diag(aa) <- 0
+
+
+# Combine 'aa' and 'distance_matrix'
+data <- data.frame(Distance = as.vector(distance_matrix), FST = as.vector(aa))
+
+# Add row and column indices for easier tracking
+data$row_index <- rep(rownames(distance_matrix), each = ncol(distance_matrix))
+data$col_index <- rep(colnames(distance_matrix), nrow(distance_matrix))
+
+head(data)
+```
+
+We can merge the FST and distance matrices
+```{r}
+# Ensure the matrices have the same names in the same order
+common_names <- intersect(rownames(distance_matrix), rownames(aa))
+sorted_names <- sort(common_names)
+
+# Reorder the matrices
+distance_matrix <- distance_matrix[sorted_names, sorted_names]
+aa <- aa[sorted_names, sorted_names]
+
+# Initialize the final merged matrix
+merged_matrix <- matrix(NA, nrow = nrow(aa), ncol = ncol(aa))
+rownames(merged_matrix) <- sorted_names
+colnames(merged_matrix) <- sorted_names
+
+# Fill the upper triangular part from aa
+merged_matrix[upper.tri(merged_matrix, diag = FALSE)] <- aa[upper.tri(aa, diag = FALSE)]
+
+# Fill the lower triangular part from distance_matrix
+merged_matrix[lower.tri(merged_matrix, diag = FALSE)] <- distance_matrix[lower.tri(distance_matrix, diag = FALSE)]
+
+# Format the matrix (Fst two decimals and distance in Km with zero decimals)
+# Format the elements based on their position in the matrix
+for(i in 1:nrow(merged_matrix)) {
+  for(j in 1:ncol(merged_matrix)) {
+    if (i < j) {
+      # Upper triangular - Fst values with two decimal places
+      merged_matrix[i, j] <- sprintf("%.2f", as.numeric(merged_matrix[i, j]))
+    } else if (i > j) {
+      # Lower triangular - Distance values with zero decimal places
+      merged_matrix[i, j] <- sprintf("%.0f", as.numeric(merged_matrix[i, j]))
+    }
+  }
+}
+
+# Now the merged_matrix should be formatted as you need
+print(merged_matrix)
+```
+
+```{r}
+cities <- readRDS(here("output", "populations", "cities.rds"))
+head(cities)
+```
+
+We can sort by distance
+```{r}
+# Calculate row-wise mean distances (excluding diagonal)
+row_means <- rowMeans(distance_matrix, na.rm=TRUE)
+
+# Sort row names by mean distances
+sorted_names_by_distance <- names(sort(row_means))
+
+# Reorder distance_matrix and aa matrices based on these sorted names
+distance_matrix <- distance_matrix[sorted_names_by_distance, sorted_names_by_distance]
+aa <- aa[sorted_names_by_distance, sorted_names_by_distance]
+
+# Your existing code to initialize and fill the merged_matrix
+merged_matrix <- matrix(NA, nrow = nrow(aa), ncol = ncol(aa))
+rownames(merged_matrix) <- sorted_names_by_distance
+colnames(merged_matrix) <- sorted_names_by_distance
+
+merged_matrix[upper.tri(merged_matrix, diag = FALSE)] <- aa[upper.tri(aa, diag = FALSE)]
+merged_matrix[lower.tri(merged_matrix, diag = FALSE)] <- distance_matrix[lower.tri(distance_matrix, diag = FALSE)]
+
+# Formatting code with absolute value for upper triangular part
+for(i in 1:nrow(merged_matrix)) {
+  for(j in 1:ncol(merged_matrix)) {
+    if (i < j) {
+      merged_matrix[i, j] <- sprintf("%.2f", abs(as.numeric(merged_matrix[i, j])))
+    } else if (i > j) {
+      merged_matrix[i, j] <- sprintf("%.0f", as.numeric(merged_matrix[i, j]))
+    }
+  }
+}
+
+# Print the merged matrix
+print(merged_matrix)
+```
+
+Make a table and save as word document
+```{r}
+# Convert the matrix to a data frame and add a column with row names
+merged_df <- as.data.frame(merged_matrix)
+merged_df$Population <- rownames(merged_matrix)
+
+# Reorder columns to have RowNames as the first column
+merged_df <- merged_df[, c("Population", colnames(merged_matrix))]
+
+
+# Create a flextable object from the merged_matrix
+ft <- qflextable(as.data.frame(merged_df))
+
+ft
+
+# Create a new Word document
+doc <- read_docx()
+
+# Add the flextable to the Word document
+doc <- body_add_flextable(doc, ft)
+
+# Save the Word document
+print(doc, target =  here("output", "fst", "brazil_fst_distance.docx"))
+```
+
+
+
+Fit linear regression
+```{r, fig.height=5, fig.width=7}
+# Check for non-positive values in Distance
+data <- data[data$Distance > 0, ]
+
+# Fit linear model
+lm_model <- lm(FST/(1-FST) ~ log(Distance), data = data)
+equation_text <- sprintf("y = %.6fx + %.3f", coef(lm_model)[2], coef(lm_model)[1])
+r2_text <- sprintf("R^2 = %.2f", summary(lm_model)$r.squared)
+
+# source the plotting function
+source(here("scripts", "analysis", "my_theme2.R"))
+
+
+# Plot
+ggplot(data, aes(x = log(Distance), y = FST/(1-FST))) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  annotate("text", x = max(log((data$Distance))) * 0.85, y = max(data$FST/(1-data$FST)) * 0.95, label = paste(equation_text, r2_text, sep = "\n"), size = 4, color = "black") +
+  labs(title = "FST vs Distance - All populations",
+       x = "Log(Distance)",
+       y = "FST(1-FST)") +
+  scale_x_continuous(labels = scales::comma) + 
+  theme_classic() +
+  theme(axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14
+                                   )) 
+
+# 
+ggsave(
+  filename = here("output", "fst", "figures", "fst_by_distance.pdf"),
+  width = 7,
+  height = 5,
+  units = "in"
+)
+```
+
+### 1.2 Mantel test 
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "populations", "cities.rds"))
+
+
+# Arrange by region 
+sampling_loc <- sampling_loc |>
+  dplyr::arrange(
+    region, biome
+  ) |>
+  dplyr::filter(!(pop %in% c("VAS", "ITB", "ITP", "MAG", "PQM", "PQN", "PQS","CGO", "IGU")))
+
+# Check it
+head(sampling_loc)
+```
+
+The fam file
+```{r}
+fam_file <- here(
+  "output", "fst", "brazil_ibd.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+Merge
+```{r}
+# Join with sampling_loc to get sampling localities
+loc_2 <- fam_data |>
+  left_join(sampling_loc, by = c("FamilyID" = "pop"))
+
+head(loc_2)
+```
+
+Get the latitude and longitude
+```{r}
+aegypti_dist2 <- cbind(loc_2$latitude, loc_2$longitude)
+head(aegypti_dist2)
+colnames(aegypti_dist2)<- c("x","y") 
+```
+
+Add jitter
+```{r}
+aegypti_dist2 <- jitter(aegypti_dist2, factor = 1, amount = NULL)
+head(aegypti_dist2)
+```
+
+
+Add to object
+```{r}
+brazil$other$xy <- aegypti_dist2
+```
+
+Save
+```{r}
+saveRDS(
+  brazil,
+  here(
+    "output", "fst", "brazil_mantel.rds"
+  )
+)
+```
+
+
+Isolation by distance
+
+
+Convert to genid
+```{r}
+mantel_brazil <- gl2gi(brazil, probar = FALSE, verbose = NULL)
+```
+
+Convert to genpop
+```{r}
+toto <- genind2genpop(mantel_brazil)
+```
+
+Get 1 mosquito per population, it is just to get the geographical coordinates
+```{r}
+unique_populations <- unique(mantel_brazil@pop)
+selected_individuals <- integer(length(unique_populations))
+for (i in seq_along(unique_populations)) {
+  inds_in_pop <- which(mantel_brazil@pop == unique_populations[i])
+  selected_individuals[i] <- sample(inds_in_pop, 1)
+}
+brazil2_subset <- mantel_brazil[selected_individuals, ]
+```
+
+
+Mantel test
+```{r}
+Dgen <- dist.genpop(toto,method=2)
+Dgeo <- dist(brazil2_subset$other$xy, method = "euclidean")
+ibd <- mantel.randtest(Dgen,Dgeo,nrepet = 999)
+ibd
+```
+
+Explanations:
+Observation: This is the observed Mantel statistic for our data, which is -0.07120819 It represents the correlation between the two matrices. A positive value indicates a positive correlation, meaning as one distance increases, so does the other.
+
+Monte-Carlo Test: This test involves repeatedly randomizing one of the matrices and calculating the Mantel statistic for each randomized version. This process creates a distribution of Mantel statistics under the null hypothesis (which usually states that there is no association between the matrices).
+
+Simulated p-value: The p-value is 0.791. This value represents the proportion of replicates in the Monte-Carlo test where the Mantel statistic was greater than or equal to the observed statistic (-0.07120819). A
+
+Alternative Hypothesis: greater: This indicates that the test was one-sided, testing whether the observed Mantel statistic is greater than what would be expected by chance.
+
+Std.Obs (Standardized Observation): This is our observed Mantel statistic standardized (1.626624021) using the expectation and variance from the Monte-Carlo test.
+
+Expectation and Variance: These are the mean (-0.003941264) and variance (0.019914350) of the Mantel statistic under the null hypothesis, calculated from the Monte-Carlo replicates.
+
+Interpretation:
+The observed Mantel statistic (-0.07120819) suggests a moderate positive correlation between genetic and geographic distances.
+The p-value of 0.059 is close to 0.05, indicating a trend towards significance, but not strong enough to confidently reject the null hypothesis of no correlation.
+The test was specifically looking to see if the genetic distance increases with geographic distance (one-sided test).
+The standardized observation (Std.Obs) being positive and relatively large suggests that the observed correlation is somewhat higher than what would be expected by chance.
+
+Plot 
+```{r}
+# Plot it
+# Start the PDF device
+CairoPDF(here(
+     "output", "fst", "figures", "sim.pdf"))
+plot(ibd)
+dev.off()
+plot(ibd)
+```
+
+
+```{r}
+plot(Dgeo, Dgen)
+# A linear regression model (lm stands for "linear model") is fitted, with the genetic distances (Dgen) as the response variable and the geographic distances (Dgeo) as the predictor. The distances are transformed into vectors using as.vector because the dist function produces a matrix-like structure, but the linear regression function lm requires vectors.
+dist_lm <- lm(as.vector(Dgen) ~ as.vector(Dgeo))
+abline(dist_lm, col="red", lty=2)
+```
+
+Add the equation
+```{r}
+# Plotting the data
+plot(Dgeo, Dgen, main = "Genetic Distance vs Geographic Distance")
+abline(dist_lm, col="red", lty=2)
+
+# Extracting the coefficients from the linear model
+intercept <- coef(dist_lm)[1]
+slope <- coef(dist_lm)[2]
+r2 <- summary(dist_lm)$r.squared
+
+# Generating the equation string
+equation <- sprintf("y = %.4fx + %.2f", slope, intercept)
+r2_label <- sprintf("R^2 = %.2f", r2)
+
+# Adding the equation and R^2 to the plot
+# You can adjust the position (e.g., x and y values) as necessary
+# text(x = max(as.vector(Dgeo)) * 0.8, y = max(as.vector(Dgen)) * 0.9, labels = equation)
+# text(x = max(as.vector(Dgeo)) * 0.8, y = max(as.vector(Dgen)) * 0.85, labels = r2_label)
+
+```
+
+
+
+Use library MASS for plot
+```{r}
+dens <- kde2d(as.vector(Dgeo), as.vector(Dgen), n = 500)
+myPal <-
+  colorRampPalette(c("white", "blue", "gold", "orange", "red"))
+# CairoPDF(here("output", "fst", "ibd.pdf"),
+#     width = 5,
+#     height = 4)
+png(here("output", "fst", "figures", "ibd2.png"),
+    width = 5,
+    height = 4,
+    units='in',
+    res = 300)
+myPal <-
+  colorRampPalette(c("white", "purple", "gold", "orange", "red"))
+plot(Dgeo, Dgen, pch = 20, cex = .3, bty = "n")
+image(dens, col = transp(myPal(300), .7), add = TRUE)
+abline(dist_lm)
+# Extracting the coefficients and R^2 from the linear model
+intercept <- coef(dist_lm)[1]
+slope <- coef(dist_lm)[2]
+r2 <- summary(dist_lm)$r.squared
+
+# Constructing the equation and R^2 strings
+equation <- sprintf("y = %.4fx + %.2f", slope, intercept)
+r2_label <- sprintf("R^2 = %.2f", r2)
+
+# Adding the equation and R^2 to the plot
+# text(x = max(as.vector(Dgeo)) * 0.8, y = max(as.vector(Dgen)) * 0.5, labels = equation)
+# text(x = max(as.vector(Dgeo)) * 0.8, y = max(as.vector(Dgen)) * 0.45, labels = r2_label)
+
+# title("Isolation by distance")
+dev.off()
+```
+
+
+
+## 2. Global data set
+
+```{r}
+# Remove all objects from the environment
+rm(list = ls())
+
+# Run the garbage collector to free up memory
+gc()
+```
+
+
+```{bash}
+plink \
+--allow-extra-chr \
+--keep-allele-order \
+--bfile output/global_brazil/snps_sets/global \
+--recodeA \
+--out output/fst/global \
+--silent;
+grep 'samples\|variants\|remaining' output/fst/global.log
+```
+
+Look at https://rdrr.io/cran/StAMPP/man/stamppFst.html for details of Fst estimations
+
+```{r, eval=FALSE, message=FALSE, results='hide'}
+global <-
+  read.PLINK(
+    here(
+      "output", "fst", "global.raw"
+    ),
+    quiet = FALSE,
+    chunkSize = 1000,
+    parallel = require("parallel"),
+    n.cores = 4
+  )
+
+summary(global)
+```
+
+
+Convert
+```{r, eval=FALSE}
+# convert
+global_2 <- stamppConvert(global, type="genlight")
+```
+
+Run
+```{r, eval=FALSE}
+# run stampp
+global_3 <- stamppFst(global_2, 1, 95, 6)
+```
+
+
+Save it
+```{r, eval=FALSE}
+saveRDS(
+  global_3, here(
+    "output", "fst", "global.rds"
+  )
+)
+```
+
+
+To load it
+```{r}
+global_3 <- readRDS(
+  here(
+    "output", "fst", "global.rds"
+  )
+)
+```
+
+
+Now lets look at the object
+
+```{r}
+summary(global_3)
+```
+
+If you want you can save the fst values as csv.
+```{r}
+# Convert to data frame
+global_df <- data.frame(global_3)
+
+# Save it
+write.csv(global_df, file = here("output", "fst", "global_df.csv"))
+```
+
+Check the Fst values
+```{r}
+head(global_df)
+```
+
+
+Now lets get the Fst values from the object albo3. It has the bootstraps, CI limits, p-values, and Fst values.
+We will convert the data into a matrix.
+```{r}
+aa <- as.matrix(global_df)
+aa[upper.tri(aa)] <- t(aa)[upper.tri(t(aa))]
+head(aa)
+```
+
+Import sample locations
+```{r}
+sampling_loc <- readRDS(here("output", "global_brazil", "cities_loc.rds"))
+
+sampling_loc <- sampling_loc |>
+  arrange(Region, country, city)
+
+# Specify the desired order
+desired_order <- c("Africa", "Asia", "Europe", "Oceania", "Pacific", "North America", "Central America", "Caribbean", "South America")
+
+# Set the order using the factor function
+sampling_loc$Region <- factor(sampling_loc$Region, levels = desired_order)
+
+# Now, when you use functions like arrange(), it will follow this order:
+sampling_loc <- dplyr::arrange(sampling_loc, Region)
+
+
+# Check it
+head(sampling_loc)
+```
+
+Order
+```{r}
+order_pops <- as.vector(sampling_loc$pop)
+order_pops
+```
+
+
+Lets check if the matrix is symmetric.
+```{r}
+isSymmetric(aa)
+```
+
+
+Now lets order the matrix using poporder. We will also add NA on the upper left side of the matrix.
+```{r}
+aa <- aa[order_pops, order_pops]
+aa[lower.tri(aa)] <- NA
+```
+
+
+Now we have to convert the matrix to a data frame to plot it with the ggplot.
+
+```{r}
+pairfst.long <- melt(aa)
+summary(pairfst.long)
+```
+
+Now lets plot the data with ggplot.
+You can click in the little square on the top left of the plot to open it on a new window. It will have the right proportions.
+```{r, fig.width=9, fig.height=8}
+pairfst.f <- ggplot(pairfst.long, aes(Var1, Var2)) +
+  geom_tile(aes(fill = value), colour = "white") +
+  scale_fill_gradient(
+    low = "white",
+    high = "#71b6ff",
+    name = "Fst",
+    na.value = "white",
+    limits = c(0, 0.5)
+  ) +
+  scale_x_discrete(position = "top") +
+  theme_bw() +
+  geom_text(aes(label = ifelse(
+    is.na(value), "", formatC(value, digits = 2, format = "f")
+  )), size = 3) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank(),
+    axis.text.y = element_text(hjust = 0)
+  )
+pairfst.f
+```
+
+```{r}
+ggsave(
+  filename = here("output", "fst", "fst_matrix_global.pdf"),
+  pairfst.f,
+  width = 30,
+  height = 30,
+  units = "in"
+)
+```
+
+Remove NAs and rename columns
+```{r}
+# remove NAs
+fst2 <-
+  pairfst.long |>
+  drop_na()
+
+# rename columns
+fst2 <-
+  fst2 |>
+  dplyr::rename(pop1 = 1,
+         pop2 = 2,
+         fst  = 3)
+
+
+# Split the data into two data frames, one for pop1 and one for pop2
+df_pop1 <- fst2 |>
+  dplyr::select(pop = pop1, fst)
+df_pop2 <- fst2 |>
+  dplyr::select(pop = pop2, fst)
+
+# Combine the two data frames
+df_combined <- bind_rows(df_pop1, df_pop2)
+
+# Calculate the mean fst for each population
+mean_fst <- df_combined |>
+  group_by(pop) |>
+  summarise(mean_fst = mean(fst))
+
+print(mean_fst)
+```
+
+Merge
+```{r}
+fst3 <-
+  sampling_loc |>
+  left_join(
+    mean_fst,
+    by = c("pop" = "pop")
+  ) |>
+  drop_na()
+
+# check output
+head(fst3)
+```
+
+Mean by region
+```{r}
+# Group by Region and calculate the mean_fst by Region
+region_means <- fst3 |>
+  group_by(Region) |>
+  summarize(mean_fst_by_region = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_region column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(region_means, by = "Region")
+
+# Print the modified fst3 tibble
+print(fst3)
+```
+
+Mean by country
+```{r}
+# Group by Country and calculate the mean_fst by Country
+country_means <- fst3 |>
+  group_by(country) |>
+  summarize(mean_fst_by_country = round(mean(mean_fst, na.rm = TRUE), 2)) |>
+  ungroup()  # Ungroup the data
+
+# Add the mean_fst_by_country column to the fst3 tibble
+fst3 <- fst3 |>
+  left_join(country_means, by = "country")
+
+# Print the modified fst3 tibble
+print(fst3)
+```
+
+
+```{r}
+fst4 <- fst3 |>
+  dplyr::select(
+    Region, mean_fst_by_region, country, mean_fst_by_country, city, pop, mean_fst,
+  )
+
+fst4 <- fst4 |>
+  arrange(
+    Region, country, city
+  )
+
+# Round
+fst4 <- fst4 |>
+  mutate_if(is.numeric, ~ round(., 2))
+
+head(fst4)
+```
+
+
+```{r}
+# Set theme if you want to use something different from the previous table
+set_flextable_defaults(
+  font.family = "Arial",
+  font.size = 9,
+  big.mark = ",",
+  theme_fun = "theme_zebra" # try the themes: theme_alafoli(), theme_apa(), theme_booktabs(), theme_box(), theme_tron_legacy(), theme_tron(), theme_vader(), theme_vanilla(), theme_zebra()
+)
+
+# Then create the flextable object
+flex_table <- flextable(fst4) |>
+  set_caption(caption = as_paragraph(
+    as_chunk(
+      "Table 1. Fst values for global data set.",
+      props = fp_text_default(color = "#000000", font.size = 14)
+    )
+  ),
+  fp_p = fp_par(text.align = "center", padding = 5))
+
+# Print the flextable
+flex_table
+```
+
+```{r}
+# Initialize Word document
+doc <- 
+  read_docx() |>
+  body_add_flextable(value = flex_table)
+
+# Define the output path with 'here' library
+output_path <- here(
+  "output",
+  "fst", 
+  "fst_global.docx"
+  )
+
+# Save the Word document
+print(doc, target = output_path)
+```

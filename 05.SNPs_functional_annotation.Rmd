@@ -1,0 +1,785 @@
+---
+title: "Aedes aegypti in Brazil - Functional annotation of SNPs using SnpEff"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+
+## 1. Load the libraries
+
+```{r load_libraries, message=FALSE, warning=FALSE, results='hide'}
+library(tidyverse)
+library(here)
+library(colorout)
+library(dplyr)
+library(flextable)
+library(ggstatsplot)
+library(ggplot2)
+library(scales)
+library(reticulate)
+library(extrafont)
+library(stringr)
+library(flextable)
+library(officer)
+library(vroom)
+library(gt)
+library(ggrepel)
+library(janitor)
+```
+
+## 2. Download SnpEff
+
+We will used SnpEff to perform a functional annotation of our SNPs You can download the software
+[HERE](https://pcingola.github.io/SnpEff/). They have great documentation that it is worth checking it
+[HERE](https://pcingola.github.io/SnpEff/se_commandline/).
+
+```{bash download_SnpEff, eval=FALSE}
+# move to the directory you want to download it
+# Download and install SnpEff
+curl -v -L 'https://snpeff.blob.core.windows.net/versions/snpEff_latest_core.zip' > snpEff_latest_core.zip
+unzip snpEff_latest_core.zip
+```
+
+We can create a data base or use one that is already available.
+SnpEff documentation [HERE](https://pcingola.github.io/SnpEff/se_build_db_gff_gtf/):
+
+    There are three main steps when building a database:
+
+    Step 1: Configure a new genome in SnpEff's config file snpEff.config.
+    Step 2: Build using gene annotations and reference sequences
+    Step 3: Checking the database: SnpEff will check the database by comparing predicted protein sequences and CDS sequences with ones provided by the user.
+
+Documentation regarding building database using GFF file:
+
+    GFF File name
+
+    SnpEff expects the GFF file to be located at
+
+
+    $SNPEFF_HOME/data/GENOME_NAME/genes.gff
+    where:
+
+    $SNPEFF_HOME is the directory where SnpEff is installed (usually $HOME/snpEff)
+    GENOME_NAME is the genome name of the genome you are trying to build, which MUST match the name you added in the config file snpEff.config
+    Note: The file name can be genes.gff.gz if it's compressed using gzip.
+
+Check databases
+```{bash, eval=FALSE}
+java -Xmx8g -jar /Users/lucianocosme/Packages/snpEff/snpEff.jar databases | grep "aegypti"
+#Aedes_aegypti_lvpagwg                                       	Aedes_aegypti_lvpagwg                                       	OK        	                              	https://snpeff.blob.core.windows.net/databases/v5_0/snpEff_v5_0_Aedes_aegypti_lvpagwg.zip
+```
+
+Download it
+```{bash, eval=FALSE}
+java -jar /Users/lucianocosme/Packages/snpEff/snpEff.jar download -v Aedes_aegypti_lvpagwg
+# 00:00:00	SnpEff version SnpEff 5.0e (build 2021-03-09 06:01), by Pablo Cingolani
+# 00:00:00	Command: 'download'
+# 00:00:00	Reading configuration file 'snpEff.config'. Genome: 'Aedes_aegypti_lvpagwg'
+# 00:00:00	Reading config file: /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/snpEff.config
+# 00:00:00	Reading config file: /Users/lucianocosme/Packages/snpEff/snpEff.config
+# 00:00:00	done
+# 00:00:00	Downloading database for 'Aedes_aegypti_lvpagwg'
+# 00:00:01	Connecting to https://snpeff.blob.core.windows.net/databases/v5_0/snpEff_v5_0_Aedes_aegypti_lvpagwg.zip
+# 00:00:01	Connecting to https://snpeff.blob.core.windows.net/databases/v5_0/snpEff_v5_0_Aedes_aegypti_lvpagwg.zip, using proxy: false
+# 00:00:01	Local file name: '/var/folders/4q/74yqd6_94k97ywbkz0_wd9n80000gn/T//snpEff_v5_0_Aedes_aegypti_lvpagwg.zip'
+# .........................
+# 00:00:09	Download finished. Total 26863996 bytes.
+# 00:00:09	Extracting file 'data/Aedes_aegypti_lvpagwg/snpEffectPredictor.bin'
+# 00:00:09	Unzip: OK
+# 00:00:09	Deleted local file '/var/folders/4q/74yqd6_94k97ywbkz0_wd9n80000gn/T//snpEff_v5_0_Aedes_aegypti_lvpagwg.zip'
+# 00:00:09	Done
+# 00:00:09	Logging
+# 00:00:10	Done.
+```
+
+
+## 3. Run SnpEff
+We prepared the vcf file after doing quality control.
+```{bash, eval=FALSE}
+java -Xmx8g -jar /Users/lucianocosme/Packages/snpEff/snpEff.jar Aedes_aegypti_lvpagwg output/populations/snps_sets/snpeff.vcf > output/snpeff/ann.vcf
+```
+
+
+Move files to output
+```{bash, eval=FALSE}
+# SnpEff will create a .txt and a .html file in our project root directory, we can move them to the right place
+mv snpEff_* output/snpeff/
+# you can double click the file snpEff_summary.html to see the summary of our annotation
+```
+
+Get types of variants
+
+```{bash, eval=FALSE}
+# i wrote a bash script to get the number of variants we have, you might have to run chmod 775 if you get permission denied
+./scripts/analysis/variants_by_effect.sh output/snpeff/ann.vcf
+```
+
+Alternatively, we can create a file with the effects and how they are annotated in the vcf file
+
+```{bash, eval=FALSE}
+echo "Nonsynonymous missense_variant
+Synonymous synonymous_variant
+Intron intron_variant
+Intergenic intergenic_region
+3UTR 3_prime_UTR_variant
+5UTR 5_prime_UTR" > output/snpeff/variant_types.txt 
+```
+
+```{bash, eval=FALSE}
+# not the most elegant but works
+cat output/snpeff/variant_types.txt | while IFS=" " read -r variant effect
+do
+  echo "$variant"; cat output/snpeff/ann.vcf | sed '/##/d' | grep -c "$effect"
+done | xargs -n2 > output/snpeff/annotations_summary.txt
+```
+
+Now, we can import it into R and make a table
+
+```{r create_table_with_variants_effect}
+# import data
+var_effects <- read_delim(
+  here(
+    "output", "snpeff", "annotations_summary.txt"
+  ),
+  col_names = FALSE,
+  show_col_types = FALSE,
+  col_types = "ci"
+) |>
+  rename(
+    Effect            = 1,
+    Number            = 2
+  ) |>
+  mutate(
+    Effect = as.factor(
+      Effect
+    ),
+    Percentage = prop.table(
+      Number
+    ) * 100,
+    across(
+      3, ~round(., 2)
+    )
+  ) |>
+  arrange(
+    -Percentage
+  )
+
+# make table
+ftabv <- flextable(
+  var_effects |>
+  rename(
+    Effect            = 1,
+    "Number of SNPs"  = 2
+  )
+) |>
+  set_caption(
+    as_paragraph(
+      as_chunk(
+        "Variant effects for SNPs genotyped with the Chip",
+        props         = fp_text_default(
+          font.family = "Cambria"
+        )
+      )
+    ),
+    word_stylename    = "Table Caption"
+  )
+
+# Set theme
+ftabv <- flextable::theme_zebra(ftabv)
+
+
+# print(ftab, preview = "docx") # to open and see it in Microsoft Word.
+ftabv
+# save
+# then you can open MS Word and make adjustments
+ftabv |>
+  autofit() |>
+  save_as_docx(
+    path = here(
+      "output", "snpeff", "effect_type_and_number_SNPs.docx"
+    )
+  )
+```
+
+We can also make a plot of the effects
+
+```{r plot_effects, warning=FALSE}
+# create vector of colors for our plot
+# Wong, B. Points of view: Color blindness. Nat Methods (2011).
+bla <- '#000000'
+blu <- '#0072b2'
+grb <- '#56b4e9'
+lir <- '#cc79a7'
+gre <- '#009e73'
+red <- '#d55e00'
+org <- '#e69f00'
+yel <- '#f0e442'
+gry <- '#BBBBBB'
+#
+# create vector
+# option1
+# special_colors <- list(
+#   "Intron"        = "#BBBBBB",
+#   "Intergenic"    = "#0072b2",
+#   "Synonymous"    = "#009e73",
+#   "5UTR"          = "#56b4e9",
+#   "3UTR"          = "#cc79a7",
+#   "Nonsynonymous" = "#d55e00"
+# )
+# 
+# Option 2
+special_colors <- list(
+  "Intron"        = "#C1CDCD",
+  "Intergenic"    = "#1AC722",
+  "Synonymous"    = "#FF8C00",
+  "5UTR"          = "#87CEFA",
+  "3UTR"          = "#FF3030",
+  "Nonsynonymous" = "pink"
+)
+#
+# make plot
+var_effects |>
+  mutate(                                   # we can use mutate to change the class of column
+    Effect            = as.factor(          # we make column "Effect" factor
+      Effect
+      ),
+    Effect = fct_reorder(                   # library forcats to re-order by the number of variants
+       Effect, Number
+      )
+  ) |>
+  ggplot() +
+  geom_col(                                 # to make bar plot with different colors
+    aes(                                    # mapping
+      x               = Effect,
+      y               = Number,
+      fill            = Effect
+    ),
+    color             = "yellow"            # for the border
+  ) +
+  labs(                                     # to change the ylab and tittle
+    title             = "Chip variants per SnpEff annotation",
+    y                 = "Number of annotated variants",
+    x                 = "Annotated effect",
+    caption           = "Functional annotation of the SNPs on the chip after QC (~13k)"
+  ) +
+  hrbrthemes::theme_ipsum(                  # I like this theme, but you can use any
+    base_family       = "Roboto Condensed", # needs to have extrafont library
+    axis_text_size    = 12,
+    axis_title_size   = 14,
+    plot_margin       = margin(
+      10, 10, 10, 10
+    ),
+    grid              = TRUE,
+    grid_col          = "#fabbe2"
+  ) +
+   scale_fill_manual(
+    values = unlist(
+    special_colors
+    )
+  ) +
+  scale_color_manual(
+    values            = unlist(
+    special_colors
+    )
+  ) +
+  theme(
+    legend.position   = "none",
+    panel.grid.major  = element_line(
+      linetype        = "dashed",
+      linewidth       = 0.2,
+    ),
+    panel.grid.minor  = element_line(
+      linetype        = "dashed",
+      linewidth       = 0.2
+    )
+  ) +
+  scale_y_continuous(
+        trans = "log10",
+        breaks = scales::log_breaks(
+          n = 10
+        ),
+        labels = label_comma()
+    ) +
+  annotation_logticks(
+    sides = "b"
+  ) +
+  geom_label(
+    aes(
+      x               = Effect,
+      y               = Number,
+      color           = Effect,
+      label=paste(
+        formatC(
+          Number, format="f", big.mark = ",", digits=0
+          ),"\n","(",Percentage,"%)"
+      )
+    ),
+    face              = "bold",
+    size              = 2,
+    family            = "",
+    alpha             = .9,
+  ) +
+  coord_flip()                             # to make it easier to read
+#
+# save plot
+ggsave(
+  here(
+    "output", "snpeff", "figures", "SNPs_effect_chip.pdf"
+  ),
+  width               = 10,
+  height              = 4,
+  units               = "in"
+)
+```
+
+We can make variant lists based on their effect. It is useful for other analysis. However, since the annotation is not
+optimal, we have to be careful.
+
+```{bash make_variant_lists, eval=FALSE}
+# variants from intergenic regions
+sed '/##/d' output/snpeff/ann.vcf | grep "intergenic_region" | awk '{print $3}' > output/snpeff/intergenic_SNPs.txt
+#
+# variants from introns
+sed '/##/d' output/snpeff/ann.vcf | grep "intron_variant" | awk '{print $3}' > output/snpeff/intron_SNPs.txt
+#
+# variants from 3'UTR
+sed '/##/d' output/snpeff/ann.vcf | grep "3_prime_UTR_variant" | awk '{print $3}' > output/snpeff/3UTR_SNPs.txt
+#
+# variants from 5'UTR
+sed '/##/d' output/snpeff/ann.vcf | grep "5_prime_UTR" | awk '{print $3}' > output/snpeff/5UTR_SNPs.txt
+#
+# variants from both 3 and 5'UTRs
+sed '/##/d' output/snpeff/ann.vcf | grep "3_prime_UTR_variant\|5_prime_UTR" | awk '{print $3}' > output/snpeff/UTRs_SNPs.txt
+#
+# synonymous
+sed '/##/d' output/snpeff/ann.vcf | grep "synonymous_variant" | awk '{print $3}' > output/snpeff/Synonymous_SNPs.txt
+#
+# nonsynonymous
+sed '/##/d' output/snpeff/ann.vcf | grep "missense_variant" | awk '{print $3}' > output/snpeff/Nonsynonymous_SNPs.txt
+```
+
+We can also import the output of SnpEff into R
+
+```{r import_SnpEff_output}
+# import SnpEff output
+snpEff <-
+  read_delim(
+    here(
+      "output", "snpeff", "snpEff_genes.txt"
+    ),
+    delim = '\t',
+     comment = "# ",
+    col_names = TRUE,
+    show_col_types = FALSE
+  ) |>
+  rename(
+    GeneName = 1
+  )
+# we can check the name of the columns
+colnames(snpEff)
+```
+
+Lets get some gene counts
+
+```{r counting_genes_with_SNPs}
+# because the annotation was lifted from one genome assembly to a new one, we have some issues with the functional annotation. For example, we have genes missing start or stop codons, exons, etc. Therefore, we can focus on genes with the initial ID. SnpEff ties to annotate genes with missing exons or that have been broken up due to lifting.
+# lets count how many genes we have starting with the letter LOC and remove rows with exons only
+protein <-
+  snpEff |>
+  filter(
+    !grepl(
+      "exon",
+      GeneName
+    )
+  ) |>
+  filter(
+    grepl(
+      "AAEL",
+      GeneName
+    )
+  ) |>
+  count(
+    BioType,
+    sort = TRUE
+  ) |>
+  rename(
+    "BioType of the gene"       = 1,
+    "Number of genes with SNPs" = 2
+  )
+#
+# make table
+set_flextable_defaults(na_str = "NA", big.mark = ",")
+ftabp <-
+  flextable(
+    protein
+  ) |>
+  set_caption(
+    as_paragraph(
+      as_chunk(
+        "Number of genes with SNPs",
+        props = fp_text_default(
+          font.family = "Cambria"
+        )
+      )
+    ),
+    word_stylename = "Table Caption"
+  )
+#
+# Apply zebra theme
+ftabp <- flextable::theme_zebra(ftabp)
+# print(ftab, preview = "docx") # to open and see it in Microsoft Word.
+ftabp
+# save
+# then you can open MS Word and make adjustments
+ftabp |>
+  autofit() |>
+  save_as_docx(
+    path = here(
+      "output", "snpeff", "Number_of_genes_with_SNPs.docx"
+    )
+  )
+```
+
+The plot and statistics above are an approximation since the annotation was lifted, and we have more variant types I
+did not list. We could import the vcf to R, and parse it.
+
+Import vcf to R.
+
+```{r color_blind_colors}
+# following the code shared here https://joemcgirr.github.io/files/code_tutorials/my_genome/SnpEFF.html
+start_time <- Sys.time()
+# Wong, B. Points of view: Color blindness. Nat Methods (2011).
+bla <- '#000000'
+blu <- '#0072b2'
+grb <- '#56b4e9'
+lir <- '#cc79a7'
+gre <- '#009e73'
+red <- '#d55e00'
+org <- '#e69f00'
+yel <- '#f0e442'
+gry <- '#BBBBBB'
+#
+# this step we did it earlier
+# wget https://snpeff.blob.core.windows.net/versions/snpEff_latest_core.zip
+# unzip snpEff_latest_core.zip
+```
+
+We need to get gatk to convert vcf to table
+
+```{bash download_gatk, eval=FALSE}
+# you can run it on the terminal
+wget \
+https://github.com/broadinstitute/gatk/releases/download/4.3.0.0/gatk-4.3.0.0.zip \
+--directory-prefix output/files
+#
+# decompress it
+unzip \
+/Users/lucianocosme/Dropbox/Albopictus/manuscript_chip/data/no_autogenous/albo_chip/output/files/gatk-4.3.0.0.zip \
+-d /Users/lucianocosme/Packages
+# export path
+export PATH=$PATH:/Users/lucianocosme/Packages/gatk-4.3.0.0
+#
+```
+
+Convert vcf to table
+
+```{bash gatk_convert_variants_to_table, eval=FALSE}
+# export path
+export PATH=$PATH:/Users/lucianocosme/Packages/gatk-4.3.0.0;
+
+gatk \
+VariantsToTable \
+-V output/snpeff/ann.vcf \
+-F CHROM -F POS -F TYPE -F ID -F ANN -F LOF -F NMD -GF AD -GF DP -GF GQ -GF GT \
+-O output/snpeff/chip_ann.txt
+```
+
+Import data to R
+
+```{r import_vcf, warning=FALSE}
+# read the data
+ann <- vroom(
+  here(
+    "output", "SnpEff", "chip_ann.txt"
+  ),
+  guess_max = 1000000,
+  show_col_types = FALSE
+)
+#
+```
+
+Create annotation types
+
+```{r create_ann_types, warning=FALSE}
+# table based on SnpEFF documentation
+ann_types <- data.frame(
+  impact = c(
+    "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "HIGH", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "MODERATE", "LOW", "LOW", "LOW", "LOW", "LOW", "LOW", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER", "MODIFIER"
+  ),
+  ontology_term = c(
+    "chromosome_number_variation", "exon_loss_variant", "frameshift_variant", "rare_amino_acid_variant", "splice_acceptor_variant", "splice_donor_variant", "start_lost", "stop_gained", "stop_lost", "transcript_ablation", "3_prime_UTR_truncation&exon_loss", "5_prime_UTR_truncation&exon_loss_variant", "coding_sequence_variant-moderate", "conservative_inframe_deletion", "conservative_inframe_insertion", "disruptive_inframe_deletion", "disruptive_inframe_insertion", "missense_variant", "regulatory_region_ablation", "splice_region_variant-moderate", "TFBS_ablation", "5_prime_UTR_premature_start_codon_gain_variant", "initiator_codon_variant", "splice_region_variant-low", "start_retained", "stop_retained_variant", "synonymous_variant", "3_prime_UTR_variant", "5_prime_UTR_variant", "coding_sequence_variant-modifier", "conserved_intergenic_variant", "conserved_intron_variant", "downstream_gene_variant", "exon_variant", "feature_elongation", "feature_truncation", "gene_variant", "intergenic_region", "intragenic_variant", "intron_variant", "mature_miRNA_variant", "miRNA", "NMD_transcript_variant", "non_coding_transcript_exon_variant", "non_coding_transcript_variant", "regulatory_region_amplification", "regulatory_region_variant", "TF_binding_site_variant", "TFBS_amplification", "transcript_amplification", "transcript_variant", "upstream_gene_variant"
+  )
+)
+# check the possible variant annotations
+ann_types |>
+  gt() |>
+  tab_header(
+    title = "Putative impact for sequence ontology terms output by SnpEFF"
+  )
+```
+
+
+Make variant plots. First, get variant effect numbers
+
+```{r plot_variants2}
+# function to calculate the number of variants annotated for each ontology
+# not my code, it is from https://joemcgirr.github.io/files/code_tutorials/my_genome/SnpEFF.html
+n_variants <- c()
+for (ot in ann_types$ontology_term) {
+  n_variants <- c(n_variants, (filter(ann, grepl(ot, ANN)) |> nrow()))
+  # print(ot)
+}
+#
+# create new column and sort
+ann_types$n_variants <- n_variants
+ann_types <- arrange(ann_types, n_variants)
+#
+# set factors
+ann_types$ontology_term <- factor(ann_types$ontology_term, levels = ann_types$ontology_term)
+ann_types$impact <- factor(ann_types$impact, levels = c("HIGH","MODERATE","LOW","MODIFIER"))
+```
+
+Prepare data for plotting
+
+```{r prepare_data_for_plotting, warning=FALSE}
+# arrange and remove those with those with no variants
+ann_types2 <-
+  ann_types |>
+  mutate(
+    ontology_term = str_remove_all(  # to remove the _variant from the column
+      ontology_term, "_variant"
+    )
+  ) |>
+  arrange(
+    -n_variants, ann_types
+  ) |>
+  filter(
+    !row_number() %in% c(1, 12)      # remove row with by index, we remove those that have the same values
+  ) |>
+  filter(
+    n_variants > 0
+  ) |>
+  mutate(
+    impact        = tolower(         # we use base R to convert all values on column Effect to lower case
+      impact
+    ),
+    impact        = str_to_sentence( # here we use library stringr to convert the first letter to upper case
+      impact
+    ),
+    ontology_term = str_to_sentence( # here we use library stringr to convert the first letter to upper case
+      ontology_term
+    ),
+    across("ontology_term", ~str_replace(., "_", " ")),
+    across("ontology_term", ~str_replace(., " prime_utr", "'UTR")),
+    across("ontology_term", ~str_replace(., "_premature_start_codon_gain", " start codon gain")),
+    across("ontology_term", ~str_replace(., "Missense", "Nonsynonymous")),
+    ontology_term = factor(          # set ontology_term as factor
+      ontology_term
+    ),
+    impact        = factor(          # set impact as factor
+      impact
+    ),
+    Percentage    = prop.table(      # we use prop.table to calculate percentages
+      n_variants
+    ) * 100,
+    across(                          # we use across to set column 3 as 2 decimals
+      4, round, 2
+    )
+  ) |>
+  rename(                            # to make impact start with capital letter
+    Impact        = 1
+  )
+```
+
+Make plot
+
+```{r plot_variant_effects2, warning=FALSE}
+# Wong, B. Points of view: Color blindness. Nat Methods (2011).
+bla <- '#000000'
+blu <- '#0072b2'
+grb <- '#56b4e9'
+lir <- '#cc79a7'
+gre <- '#009e73'
+red <- '#d55e00'
+org <- '#e69f00'
+yel <- '#f0e442'
+gry <- '#BBBBBB'
+#
+# create colors
+my_colors2 <- c(
+  '#d55e00', '#f0e442', '#009e73','#56b4e9'
+)
+#
+# create plot
+p1 <-
+  ann_types2 |>
+  mutate(
+    ontology_term     = fct_reorder(              # library forcats to re-order by the number of variants
+      ontology_term, n_variants
+    ),
+    Impact            = fct_relevel(
+      Impact,
+      "High", "Moderate", "Low", "Modifier"
+    ),
+  ) |>
+  ggplot(
+    aes()
+  ) +
+  geom_col(                                       # to make colorful bar plot
+    aes(
+      x               = ontology_term,
+      y               = n_variants,
+      fill            = Impact
+    ),
+    color             = "pink",                   # for the border
+    linewidth         = .3
+  ) +
+  coord_flip() +                                  # to make it easier to read
+  hrbrthemes::theme_ipsum(
+    base_family       = "Roboto Condensed",
+    axis_text_size    = 12,
+    axis_title_size   = 12,
+    plot_margin       = margin(
+      10, 10, 10, 10                              # top, right, bottom, left
+    ),
+    grid              = TRUE,
+    grid_col          = "#fabbe2"
+  ) +
+  labs(
+    y                 = "Number of annotated variants",
+    x                 = "",
+    title             = "Chip variants per SnpEff annotation"
+  ) +
+  geom_text(
+    aes(
+      y               = n_variants,
+      x               = ontology_term,
+      color           = Impact,
+      label           = percent(
+        Percentage / 100
+      )                                          # we use library scales function to show percentage
+    ),
+    size              = 3.5,
+    family            = "Roboto Condensed",
+    hjust             = -0.01
+  ) +
+  scale_fill_manual(
+    values            = my_colors2
+  ) +
+  scale_color_manual(
+    values            = my_colors2
+  ) +
+  scale_y_continuous(
+    labels            = comma
+  ) +
+  theme(
+    legend.title      = element_text(
+      family          = "Roboto Condensed",
+      face            = "bold",
+    ),
+    legend.position   = "top",
+    axis.title.x      = element_text(
+      size            = 12
+    ),
+    axis.title.y      = element_text(
+      size            = 12
+    ),
+    axis.title        = element_text(
+      size            = 12
+    ),
+    axis.text         = element_text(
+      size            = 12
+    ),
+    plot.title        = element_text(
+      size            = 18,
+      face            = "bold"
+    ),
+    panel.grid.major  = element_line(
+      linetype        = "dashed",
+      linewidth       = 0.2,
+    ),
+    panel.grid.minor  = element_line(
+      linetype        = "dashed",
+      linewidth       = 0.2
+    )
+  )
+#
+p1
+#
+# save plot
+ggsave(
+  here(
+    "output", "snpeff", "figures", "SNPs_effect_chip_plot2.pdf"
+  ),
+  width  = 11,
+  height = 5,
+  units  = "in"
+)
+```
+
+The downside of this approach is importing the vcf into R. If you have millions of SNPs it is not doable.
+
+```{r zoom_high_impact_variants, eval=FALSE, echo=FALSE}
+ p2 <- ann_types|> filter(impact %in% c("HIGH"), ontology_term != "missense_variant") |>
+   ggplot(aes(ontology_term, n_variants, fill = impact)) +
+   geom_col() +
+   coord_flip() +
+   theme_minimal() +
+   theme(axis.title.x=element_text(size=14),
+    axis.title.y=element_text(size=14),
+    axis.title=element_text(size=18),
+    axis.text=element_text(size=12),
+    plot.title=element_text(size=18))+
+   ylab("\nnumber of annotated variants")+ xlab("")+ylim(0,400)+
+   ggtitle("Number of variants showing high impact snpEFF annotations")+
+   geom_text(aes(label=n_variants), position=position_stack(), hjust=-0.5)+
+   scale_fill_manual(values = c(red,yel,blu,gre))
+print(p2)
+```

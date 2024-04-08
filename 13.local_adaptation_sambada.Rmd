@@ -1,0 +1,4324 @@
+---
+title: "Aedes aegypti Brazil - Local adaptation analysis - sambada"
+author: "Luciano V Cosme"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: breezedark
+    css:
+      - "styles.css"
+    toc: yes
+    toc_float: no
+    toc_depth: 5
+editor_options:
+  markdown:
+    wrap: 120
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  eval                        = TRUE,
+  echo                        = TRUE,
+  cache                       = TRUE, # tidy = TRUE,
+  class.output                = "bg-success"
+)
+knitr::opts_knit$set(
+  root.dir = rprojroot::find_rstudio_root_file()
+)
+```
+
+
+
+<span class="rainbow-title">Analysis code</span>
+
+<!-- Custom JavaScript to apply the rainbow effect to the title -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+  var titleElements = document.querySelectorAll('h1');
+  if (titleElements.length > 0) {
+    titleElements[0].classList.add('rainbow-title');
+  }
+});
+</script>
+
+In this RMarkdown we will overview how to run local adaptation analysis with R.Sambada
+
+## 1. R libraries and software
+
+```{r libraries, message=FALSE, results='hide', warning=FALSE}
+library(tidyverse)
+library(colorout)
+library(here)
+library(ggplot2)
+library(scales)
+library(extrafont)
+library(forcats)
+library(ggrepel)
+library(ggtext)
+library(R.SamBada)
+library(rgdal)
+library(stats)
+library(geosphere)
+library(rnaturalearth)
+library(rnaturalearthdata)
+```
+
+## 2. Get R.sambada
+
+Dependencies: To run the vignette, you will need to install R.SamBada. It is recommended to install all dependencies,
+including the "suggested packages" (i.e. packages that are used in only one or a few functions and that are therefore
+not mandatory to install the package). Note that one of the dependency (the SNPRelate package) should be installed with
+the BiocManager separately.
+
+```{r install_R.Sambada_dependencies, eval=FALSE}
+# On the cluster
+salloc --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=1 --mem-per-cpu=5120 # to install
+salloc --time=06:00:00 --nodes=1 --ntasks=1 --cpus-per-task=4 --mem-per-cpu=5120 # to run
+
+module load R/4.3.0-foss-2022b
+# install BiocManager
+install.packages("BiocManager")
+
+# install SNPRelate
+BiocManager::install(pkgs=c("SNPRelate","biomaRt")) #if asked, please update packages that needs to be updated
+```
+
+From the documentation: SamBada can only be used with GCC7 compiler, which is not the default one on MacOS. You can
+install it from the terminal by first downloading homebrew and then installing gcc7. For the function createEnv, you
+also need GDAL to be installed. This can also be done with Homebrew
+
+```{bash R.sambada_dependencides_MacOS, eval=FALSE}
+# this is for MacOS
+# install Homebrew (https://brew.sh/). At the moment of writing the command to install it is
+/usr/bin/ruby -e "$(curl -fsSL \https://raw.githubusercontent.com/Homebrew/install/master/install)"
+
+# install GCC7
+brew install gcc@7
+
+# install proj
+brew install proj
+
+# install sqlite3
+brew install sqlite3
+
+# install GDAL
+brew install gdal
+
+# check the gdal version
+gdalinfo --version
+# GDAL 3.6.3, released 2023/03/07
+```
+
+gdalUtils
+```{r gdalUtils, eval=FALSE}
+# install devtools if you don't have it
+# install.packages("devtools")
+
+# install gdalUtils
+devtools:::install_github("gearslaboratory/gdalUtils", force = TRUE)
+```
+
+
+Windows
+```{bash R.sambada_dependencides_Windows, eval=FALSE}
+# from R.sambada vignette
+# For the function createEnv, GDAL must be be installed. This can be done by using the osgeo4w installer. At the time of writing, this can be accessed under https://trac.osgeo.org/osgeo4w/. Download the 64-bit (or 32-bit) installer, check the ‘Express Desktop Install’, choose one of the proposed URL and uncheck all packages, but the GDAL package (alternatively you can use https://anaconda.org/conda-forge/gdal/files)
+```
+
+Linux
+```{bash R.sambada_dependencides__Windows_Linux, eval=FALSE}
+# For the function createEnv, GDAL must be be installed. At the moment of writing this can be done with the following command in the terminal
+# sudo apt install libgdal-dev
+# sudo apt install libproj-dev
+# If you need to use cluster then you would have to install the gdal via conda because we don't have administrative privileges. We cannot use sudo
+# you can also use the module on the HPC: 
+module load GDAL/3.6.2-foss-2022b
+```
+
+Check R.sambada Github page https://github.com/SolangeD/R.SamBada
+```{r get_R.sambada,eval=FALSE}
+# install devtools if you don't have
+install.packages('devtools')
+install.packages('gdsfmt')
+
+# load it 
+library(devtools)
+library(SNPRelate)
+library(gdsfmt)
+# install R.sambada
+install_github('SolangeD/R.SamBada', build_vignettes=TRUE)
+install_github('SolangeD/R.SamBada', build_vignettes=FALSE) # for the cluster
+# load it
+library(R.SamBada)
+
+# check the documentation
+vignette('R.SamBada')
+setRepositories()
+```
+
+
+Export path
+```{bash export_path_sambada, eval=FALSE}
+# on the terminal run (for bash)
+nano ~/.bash_profile
+# or
+# on the terminal run (for zsh)
+nano ~/.zshrc
+
+# add to bash_profile zsh_profile (copy and paste the line below)
+export PATH="/Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada-0.8.0-osx/binaries:$PATH"
+
+# Save the file by pressing Ctrl+O, then Enter.
+# Exit Nano by pressing Ctrl+X.
+# To make the changes take effect, type the following command:
+# for bash
+source ~/.bash_profile
+
+# or for zsh
+source ~/.zshrc
+
+# now you don't have to download Sambada anymore. Make sure not to delete or move the directory, if you do, update the bash profile
+```
+
+
+We have to download Sambada, from the documentation of R.Sambada: For running sambada, you need to
+download sambada's binaries. This can be done with downloadSambada which downloads Sambada from
+GitHub and unpacks it into the directory of your choice. You might already be a Sambada user and do
+not have to download it again! Note that if you plan to often use Sambada, it is recommended that
+you put the binaries folder of Sambada into your path environmental variable (this procedure is
+OS-dependent, look on the internet how to proceed), otherwise you will have to specify this path
+every time you start a new R session.
+
+Create dirs
+
+```{r create_local_adaptation_dir, eval=FALSE}
+# create output directories 
+dir_names <- c(
+  "data/local_adaptation", "output/local_adaptation", "output/local_adaptation/outflank", "output/local_adaptation/pcadapt", "output/local_adaptation/sambada"
+)
+
+for (dir_name in dir_names) {
+  here(dir_name) |>
+    dir.create(recursive = TRUE, showWarnings = FALSE)
+}
+```
+
+We can download Sambada
+
+```{r download_sambada, eval=FALSE}
+downloadSambada(
+  here(
+    "output", "local_adaptation"
+  )
+)
+```
+
+
+## 3. Prepare the data
+
+Get the data after quality control and convert it to ped format (we are using LD prunned data)
+
+Create individual ids
+```{r import_fam}
+# we will keep the order of the rows in this file
+fam1 <-
+  read.delim(
+    file   = here(
+      "output", "local_adaptation", "outflank", "brazil.fam"
+    ),
+    header = FALSE,
+  ) |>
+  mutate(V7 = paste(V1, V2, sep = "-")) |>
+  select(V1, V7, V3:V6)
+  
+head(fam1)
+```
+
+Save the new file
+```{r save_new_fam_file}
+#   ____________________________________________________________________________
+#   save calculation to load later                                          ####
+write.table(
+  fam1,
+  file      = here(
+    "output", "local_adaptation", "sambada", "brazil.fam"
+  ),
+  sep       = "\t",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote     = FALSE
+)
+```
+
+Copy files
+```{bash cp_files}
+cp output/local_adaptation/outflank/brazil.bed output/local_adaptation/sambada/;
+cp output/local_adaptation/outflank/brazil.bim output/local_adaptation/sambada/;
+
+# check new fam file
+head output/local_adaptation/sambada/brazil.fam
+```
+
+Compare to original fam file
+```{bash check_fam_original}
+head output/local_adaptation/outflank/brazil.fam
+```
+
+
+
+We will first run with all samples. Later we can select specific groups of samples to compare
+
+
+## 4. Run R.sambada
+
+### 4.1 Preprocessing
+
+From documentation: Most of the functions described here have an interactiveChecks mode. When you
+run the function for the first time on your dataset, we strongly advise that you set it to TRUE.
+This prints plots that allows you to detect anomalies .However, to facilitate the use of this
+vignette, this mode has been disabled. We advise you to try with interactive Checks==TRUE.
+
+#### 4.1.1 Prepare the genomic file
+
+From documentation: The first step when you have your genomic matrix is to prepare it into a format
+that samBada accepts. You can use prepareGeno for this, which can process plink ped, plink bed, vcf
+or gds input file. In the meantime, you can also filter out SNPs based on Minor Allele Frequency
+(MAF), Missingness, Linkage Disequilibrium (LD) and Major Genotype Frequency (MGF). In order to work
+with your dataset, a GDS file (from SNPRelate package) is first created. If saveGDS is set to TRUE,
+then the file will be saved in the active directory. The GDS file is used in other functions, so we
+recommend that you keep it.
+
+Set genomic file (bed, ped, or vcf files work)
+
+```{r set_genomic_file}
+# set genomic file
+genoFile = here(
+  "output", "local_adaptation", "sambada", "brazil.bed"
+)
+# check the file path
+genoFile
+```
+
+Prepare genomic file
+```{r prepareGeno, eval=FALSE, error=FALSE, warning=FALSE}
+# set dir this chunk
+setwd("output/local_adaptation/sambada")
+
+# run ?prepareGeno on the console to see the help page to learn about the options
+prepareGeno(
+  fileName = genoFile,
+  outputFile = here(
+    "output", "local_adaptation", "sambada", "genomic_file.csv"
+  ),
+  saveGDS = TRUE,
+  mafThresh = 0.05,
+  missingnessThresh = 0.2,
+  ldThresh = 0.2,
+  # mgfThresh = 0.9,
+  interactiveChecks = FALSE
+)
+```
+
+#### 4.1.2 Assign sample location
+
+We will use the fam file to create an id file
+```{bash check_original_fam_file}
+head output/local_adaptation/sambada/brazil.fam
+```
+
+Create ID file
+```{bash create_id_file}
+# we can merge the column 1 and 2 of the file7.fam
+awk '{print $2}' output/local_adaptation/sambada/brazil.fam > output/local_adaptation/sambada/ids.csv
+
+# check it
+head output/local_adaptation/sambada/ids.csv
+```
+
+Set id file
+```{r set_id_file}
+# set id file
+idFile=here(
+  "output", "local_adaptation", "sambada","ids.csv"
+)
+
+# check the path
+idFile
+```
+
+#### 4.1.3 Create the environmental dataset
+
+Then from the point locations, you need to create your environmental dataset from point location.
+Use createEnv for this task.
+
+You can use rasters of your study site that you already have or use the function to automatically download rasters of your study site from global databases.
+
+Load object with city information
+```{r}
+sampling_loc <- readRDS(here("output", "populations","cities.rds"))
+head(sampling_loc)
+# sampling_loc <- readRDS(here("output", "global_brazil","cities_loc.rds"))
+# head(sampling_loc)
+```
+
+
+Import .fam file we created once we created the bed file using Plink2
+```{r}
+# we will keep the order of the rows in this file
+fam1 <-
+  read.delim(
+    file   = here(
+      "output", "local_adaptation","sambada","brazil.fam"
+    ),
+    header = FALSE,
+    
+  )
+head(fam1)
+```
+
+Create location file
+```{r create_loc_file}
+# merge the objects
+loc_cities <- 
+  fam1 |>
+  left_join(sampling_loc, by = c("V1" = "pop")) |>
+  # mutate(ind = paste(V1, V2, sep = "-")) |>
+  select(
+    V1, V2, longitude, latitude
+  ) |>
+  dplyr::rename(Longitude = longitude,
+                Latitude = latitude)
+
+# check it
+head(loc_cities)
+```
+
+We can add a 200 meter jitters to each individual coordinates. The environmental variables will not change with the jitters.
+```{r add_jitters}
+# Group the data by V1 and apply jitter to Longitude and Latitude within each group
+loc_cities_jittered <- 
+  loc_cities |>
+  group_by(V1) |>
+  mutate(
+    Jittered_Longitude = jitter(Longitude, amount = 0.0002),
+    Jittered_Latitude = jitter(Latitude, amount = 0.0002)
+  )
+
+# Combine the original and jittered data into a single data frame
+loc_cities_combined <- rbind(
+  loc_cities |>
+    mutate(data_type = "original") |>
+    select(V1, V2, Longitude, Latitude, data_type),
+  loc_cities_jittered |>
+    mutate(data_type = "jittered") |>
+    select(V1, V2, Longitude = Jittered_Longitude, Latitude = Jittered_Latitude, data_type)
+)
+
+# Modify the order of the factor levels
+loc_cities_combined$data_type <- factor(loc_cities_combined$data_type, levels = c("original", "jittered"))
+
+# Plot the original and jittered data side by side using facets
+ggplot(loc_cities_combined, aes(x = Longitude, y = Latitude)) +
+  geom_point() +
+  facet_wrap(~ data_type, nrow = 1) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw()
+
+#   save the plot                                                           ####
+ggsave(
+  here(
+    "output", "local_adaptation", "sambada","jitter.pdf"
+  ),
+  width  = 4,
+  height = 4,
+  units  = "in"
+)
+```
+
+Check the jittered data
+```{r check_jitters}
+head(loc_cities_jittered)
+```
+
+Create tibble with jittered data
+```{r create_loc_tibble}
+loc_jitter <-
+  loc_cities_jittered |>
+  ungroup() |>
+  select(
+    V2, Jittered_Longitude, Jittered_Latitude
+  ) |>
+  rename(
+    ind       = 1,
+    Longitude = 2,
+    Latitude  = 3
+  )
+
+# check it
+head(loc_jitter)
+```
+
+Save to disk
+```{r save_loc_file}
+# Write the loc_cities object to a CSV file in the specified directory
+write_csv(
+  loc_jitter, 
+  here(
+    "output", "local_adaptation", "sambada", "location_file.csv"
+    )
+  )
+```
+
+Set location file
+```{r location_file}
+locationFile=here(
+  "output", "local_adaptation", "sambada", "location_file.csv"
+)
+
+# check path
+locationFile
+
+# read 2 lines
+readLines(locationFile, n=2) 
+```
+
+#### 4.1.4 Prepare the environmental dataset
+
+You can now use the prepareEnv function. This function has 3 goals 1) Put the sample ID of the
+genomic file and the environmental file in the same order (required to run sambada) 2) Reduce your
+environmental dataset. Indeed, if you use worldclim variables for examples, some of the variables
+will be very correlated. We can delete correlated variables that are above a given correlation
+threshold (argument maxCorr) 3) Check if there is a population structure to include it as an
+"environmental variable" in your environmental file.
+
+Download the environmental data
+```{r create_env_data, warning=FALSE, eval=FALSE, error=FALSE}
+# this might take a while. Run it only once
+# run ?createEnv on the console to see the help page to learn about the options
+# set dir
+setwd(
+  here(
+    "output", "local_adaptation", "sambada"
+  )
+)
+# run createEnv function
+createEnv(
+  locationFileName  = locationFile,
+  outputFile        = file.path(
+    "env_file.csv"
+  ),
+  x                 = 'Longitude',
+  y                 = 'Latitude',
+  locationProj      = 4326,
+  separator         = ',',
+  worldclim         = TRUE,
+  saveDownload      = TRUE,
+  resWC             = 0.5,
+  srtm              = FALSE,
+  # rasterName      = NULL,
+  # rasterProj      = NULL,
+  interactiveChecks = FALSE,
+  verbose           = FALSE
+)
+```
+
+Set files
+```{r set_gds_env_files}
+gdsFile=here("output", "local_adaptation", "sambada", "brazil.gds")
+gdsFile #Check the path to the file
+
+#Locate the envFile (generated from createEnv)
+envFile=here(
+    "output", "local_adaptation", "sambada", "env_file.csv"
+    )
+envFile
+readLines(envFile, n=2) #View the first 2 lines of the file
+```
+
+
+
+
+#### 4.1.5 Prepare the final environmental dataset
+
+```{bash check_env_file}
+head -n 2 output/local_adaptation/sambada/env_file.csv
+```
+
+We can add the fastStructure k=5 as population structure. We imported the fam file ealier:
+
+```{r}
+fam_file <- here(
+  "output", "local_adaptation","sambada","brazil.fam"
+)
+
+# Read the .fam file
+fam_data <- read.table(fam_file, 
+                       header = FALSE,
+                       col.names = c("FamilyID", "IndividualID", "PaternalID", "MaternalID", "Sex", "Phenotype"))
+
+# View the first few rows
+head(fam_data)
+```
+
+The admixuture matrix
+```{r}
+# Extract ancestry coefficients
+k5run1 <- read_delim(
+  here("output", "populations", "faststructure", "luciano", "run01", "simple.5.meanQ"),
+  delim = "  ", # Specify the delimiter if different from the default (comma)
+  col_names = FALSE,
+  show_col_types = FALSE
+) 
+
+head(k5run1)
+```
+
+Create ID column
+```{r}
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "IndividualID"] <- "ind"
+
+
+# Change column name
+colnames(fam_data)[colnames(fam_data) == "FamilyID"] <- "pop"
+
+# Select ID
+fam_data <- fam_data |>
+  dplyr::select("ind", "pop")
+
+# View the first few rows
+head(fam_data)
+```
+
+Add it to matrix
+```{r}
+k5run1 <- fam_data |>
+  dplyr::select(ind, pop) |>
+  bind_cols(k5run1)
+
+head(k5run1)
+```
+
+
+Rename the columns
+```{r}
+# Rename the columns starting from the third one
+k5run1 <- k5run1 |>
+  rename_with(~paste0("pop", seq_along(.x)), .cols = -c(ind, pop))
+
+# View the first few rows
+head(k5run1)
+```
+
+Now we import the env file and add the pop structure
+```{r}
+envi_file <-
+  read.delim(
+    file   = here(
+      "output", "local_adaptation", "sambada", "env_file.csv"
+    ),
+    sep = " ",
+    header = TRUE,
+    
+  )
+head(envi_file)
+```
+
+Now we merge the objects
+
+```{r}
+# Join
+envi_file2 <- envi_file |>
+  left_join(k5run1, by = c("ind" = "ind")) |>
+  dplyr::select(-pop)
+
+head(envi_file2)
+```
+
+Write the new envi file
+```{r}
+# Write the loc_jitter object to a file using space as delimiter
+write_delim(
+  envi_file2, 
+  here(
+    "output", "local_adaptation", "sambada", "env_file2.csv"
+  ),
+  delim = " "
+)
+```
+
+
+Prepare the env file
+```{r filter_env_file}
+envFile=here(
+    "output", "local_adaptation", "sambada", "env_file2.csv"
+    )
+gdsFile=here("output", "local_adaptation", "sambada", "brazil.gds")
+# check ?prepareEnv
+
+# Calculating PCA-based population structure
+prepareEnv(
+  envFile           = envFile,
+  outputFile        = file.path(
+    "output/local_adaptation/sambada", "env_file_filtered.csv"
+  ),
+  maxCorr           = 0.80,
+  idName            = 'ind',
+  x                 = 'Longitude',
+  y                 = 'Latitude',
+  genoFile          = gdsFile,
+  numPc             = 0.2,
+  mafThresh         = 0.05,
+  missingnessThresh = 0.2,
+  ldThresh          = 0.2,
+  separator         = " ",
+  popStrCol         = c("pop1", "pop2", "pop3", "pop4", "pop5"), # from fastStructure
+  numPop            = NULL, #  use k=5 from faststructure
+  clustMethod       = "hclust",
+  interactiveChecks = FALSE,
+  locationProj      = 4326
+)
+```
+
+
+Set the new files
+```{r processed_files}
+# env file after autocorrelation
+envFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "env_file_filtered.csv"
+)
+
+# check 2 lines
+readLines(envFile2, n = 2) # View the first 2 line of the environmental file
+
+# Locate genoFile in csv format (created with prepareGeno)
+genoFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "genomic_file.csv"
+)
+```
+
+### 4.2 Run SamBada
+
+The dimMax parameter refers to the maximum number of environmental variables that can be included in
+logistic models. The value of dimMax determines the complexity of the model and can affect its
+performance in different ways. We will test univariate and bivariates models.
+
+### 4.2.1 Univariate model
+
+dimMax = 1: Use this value when you want to fit univariate models, i.e., models with only one
+environmental variable. Univariate models are simple to interpret and may be useful for identifying
+individual predictors that are strongly associated with the response variable. However, they may
+miss important relationships between the response and multiple predictors.
+```{r run_sambada_miltivariate, eval=FALSE, warning=FALSE}
+# create dir for output
+dir.create(here("output", "local_adaptation", "sambada", "univariate"))
+
+# set output directory (works for this chunk only, besides I tried to set it to use the new dir but it did not work)
+setwd(here("output", "local_adaptation", "sambada"))
+
+# the code below runs SamBada with 6 CPUs, using pop1
+sambadaParallel(
+  genoFile      = genoFile2,
+  envFile       = envFile2,
+  idGeno        = 'ID_indiv',
+  idEnv         = 'ind',
+  dimMax        = 1, # we have 5 pop variables
+  cores         = 6,
+  wordDelim     = " ",
+  saveType      = 'END ALL',
+  populationVar = NULL,
+  colSupEnv     = c("pop1", "pop2", "pop3", "pop4", "pop5"), # no pop structure
+  keepAllFiles  = TRUE, # we can run sambada with this files later
+  # spatial       = 'Longitude Latitude SPHERICAL NEAREST 20',
+  # autoCorr      = 'GLOBAL BOTH 999',
+  outputFile    = here("output", "local_adaptation", "sambada", "univariate"))
+
+```
+
+We can repeat the step above in the terminal
+```{bash, eval=FALSE}
+# Navigate the the dir
+sambada \
+    genomic_file_param5.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-5-6585.csv;
+
+sambada \
+    genomic_file_param4.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-4-5268.csv;
+
+sambada \
+    genomic_file_param0.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-0-0.csv
+
+
+sambada \
+    genomic_file_param2.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-2-2634.csv
+
+sambada \
+    genomic_file_param3.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-3-3951.csv
+
+sambada \
+    genomic_file_param1.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-1-1317.csv
+
+Supervision genomic_file_paramSupervision.txt
+```
+
+
+Move the files to univariate directory
+```{bash mv_univariate_files, eval=FALSE}
+rm output/local_adaptation/sambada/univariate/*;
+mv output/local_adaptation/sambada/univariate-* output/local_adaptation/sambada/univariate;
+mv output/local_adaptation/sambada/genomic_file-mark* output/local_adaptation/sambada/univariate;
+mv output/local_adaptation/sambada/*param* output/local_adaptation/sambada/univariate
+```
+
+### 4.2.2 Bivariate model
+
+dimMax = 2: Use this value when you want to fit both univariate and bivariate models, i.e., models
+with up to two environmental variables. Bivariate models can capture more complex relationships
+between predictors and the response variable than univariate models. However, they may also increase
+the risk of overfitting the data, especially if the number of observations is limited.
+```{r run_sambada_bivariate1, eval=FALSE, warning=FALSE}
+# create dir for output
+dir.create(here("output", "local_adaptation", "sambada", "bivariate"))
+
+# set output directory (works for this chunk only, besides I tried to set it to use the new dir but it did not work)
+setwd(here("output", "local_adaptation", "sambada"))
+
+# the code below runs sambada with 6 CPUs
+sambadaParallel(
+  genoFile = genoFile2,
+  envFile = envFile2,
+  idGeno = 'ID_indiv',
+  idEnv = 'ind',
+  dimMax = 2,
+  cores = 6,
+  wordDelim = " ",
+  saveType = 'END ALL',
+  populationVar = "LAST",
+  colSupEnv     = c("pop2","pop3", "pop4", "pop5"), # for example testing pop1
+  keepAllFiles = TRUE, # we can run sambada with this files later
+  spatial = 'Longitude Latitude CARTESIAN BISQUARE 120',
+  autoCorr = 'GLOBAL BOTH 99',
+  outputFile = here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "bivariate"
+ )
+)
+```
+
+
+```{bash, eval=FALSE}
+sambada \
+    genomic_file_param3.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-3-3951.csv
+
+sambada \
+    genomic_file_param0.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-0-0.csv
+
+sambada \
+    genomic_file_param2.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-2-2634.csv
+
+sambada \
+    genomic_file_param5.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-5-6585.csv
+
+
+sambada \
+    genomic_file_param4.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-4-5268.csv
+
+sambada \
+    genomic_file_param1.txt \
+    /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/env_file_filtered.csv \
+    genomic_file-mark-1-1317.csv
+
+supervision genomic_file_paramSupervision.txt
+```
+
+Move the files to bivariate directory
+```{bash mv_bivariate_files2, eval=FALSE}
+rm output/local_adaptation/sambada/bivariate/*;
+mv output/local_adaptation/sambada/bivariate-* output/local_adaptation/sambada/bivariate;
+mv output/local_adaptation/sambada/genomic_file-mark* output/local_adaptation/sambada/bivariate;
+mv output/local_adaptation/sambada/*param* output/local_adaptation/sambada/bivariate
+```
+
+
+
+### 4.2.2 Multiviariate model
+
+It can be done in a laptop but takes a few hours and space. We can run it on the HPC and download the data
+
+First we can transfer the data to HPC
+
+
+Upload the data
+```{bash, eval=FALSE}
+# next we can download the files to our computer, run the command below in your computer, not in the cluster
+rsync -chavzP --stats /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/ lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/sambada_brazil/output/local_adaptation/sambada
+```
+
+On the cluster
+Interactive - 6h maximum (it takes longer)
+```{bash, eval=FALSE}
+cd /gpfs/ycga/work/caccone/lvc26/sambada_brazil;
+salloc --partition=day --time=24:00:00 --nodes=1 --ntasks=1 --cpus-per-task=4 --mem-per-cpu=5120;
+module load R/4.3.0-foss-2022b;
+R;
+library(rgdal)
+library(colorout)
+library(here)
+library(R.SamBada)
+
+downloadSambada(
+  here(
+    "output", "local_adaptation"
+  )
+)
+```
+
+Set the files on the HPC
+```{r, eval=FALSE}
+# env file after autocorrelation
+envFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "env_file_filtered.csv"
+)
+
+# check 2 lines
+readLines(envFile2, n = 2) # View the first 2 line of the environmental file
+
+# Locate genoFile in csv format (created with prepareGeno)
+genoFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "genomic_file.csv"
+)
+```
+
+
+```{r run_sambada_bivariate1b, eval=FALSE, warning=FALSE}
+# create dir for output
+dir.create(here("output", "local_adaptation", "sambada", "multivariate"))
+
+# set output directory (works for this chunk only, besides I tried to set it to use the new dir but it did not work)
+setwd(here("output", "local_adaptation", "sambada"))
+
+# the code below runs sambada with 6 CPUs
+sambadaParallel(
+  genoFile = genoFile2,
+  envFile = envFile2,
+  idGeno = 'ID_indiv',
+  idEnv = 'ind',
+  dimMax = 6,
+  cores = 4,
+  wordDelim = " ",
+  saveType = 'END ALL',
+  populationVar = "LAST",
+  # subsetVarEnv = c("bio1"),
+  # colSupEnv     = c("pop2", "pop3", "pop4", "pop5"),
+  # colSupEnv     = c("bio2", "bio3","bio5", "bio12", "bio13", "bio14", "bio18", "bio19", "prec1", "prec3", "prec6", "prec10", "prec11"),
+  keepAllFiles = TRUE, # we can run sambada with this files later
+  # spatial = 'Longitude Latitude CARTESIAN BISQUARE 120',
+  # autoCorr = 'GLOBAL BOTH 99',
+  outputFile = here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "multivariate"
+ )
+)
+# bio1 bio2 bio3 bio5 bio12 bio13 bio14 bio18 bio19 prec1 prec3 prec6 prec10 prec11
+```
+```{bash, eval=FALSE}
+export PATH="/ycga-gpfs/project/caccone/lvc26/sambada_brazil/output/local_adaptation/sambada-0.8.0-ubuntu/binaries:$PATH"
+```
+
+On the cluster via batch submission
+```{bash, eval=FALSE}
+#!/bin/sh
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=luciano.cosme@yale.edu
+#SBATCH --partition=week
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=20
+#SBATCH --mem-per-cpu=4G
+#SBATCH --time=120:00:00
+#SBATCH --job-name=sambada
+#SBATCH -o /ycga-gpfs/project/caccone/lvc26/sambada_brazil/sambada_%A_%a.o.txt
+#SBATCH -e /ycga-gpfs/project/caccone/lvc26/sambada_brazil/sambada_%A_%a.ERROR.txt
+
+module load R/4.3.0-foss-2022b
+module load GDAL/3.6.2-foss-2022b
+
+cd /gpfs/ycga/project/caccone/lvc26/sambada_brazil
+export PATH="/ycga-gpfs/project/caccone/lvc26/sambada_brazil/output/local_adaptation/sambada-0.8.0-ubuntu/binaries:$PATH"
+
+Rscript sambada.R
+```
+
+Rscript to submit (sambada.R)
+```{r, eval=FALSE}
+library(rgdal)
+library(colorout)
+library(here)
+library(R.SamBada)
+
+# downloadSambada(
+#   here(
+#     "output", "local_adaptation"
+#   )
+# )
+
+# env file after autocorrelation
+envFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "env_file_filtered.csv"
+)
+
+# Locate genoFile in csv format (created with prepareGeno)
+genoFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "genomic_file.csv"
+)
+
+# create dir for output
+dir.create(here("output", "local_adaptation", "sambada", "multivariate"))
+
+# set output directory (works for this chunk only, besides I tried to set it to use the new dir but it did not work)
+setwd(here("output", "local_adaptation", "sambada"))
+
+# Run sambada with 20CPUs
+sambadaParallel(
+  genoFile = genoFile2,
+  envFile = envFile2,
+  idGeno = 'ID_indiv',
+  idEnv = 'ind',
+  dimMax = 6,
+  cores = 20,
+  wordDelim = " ",
+  saveType = 'END ALL',
+  populationVar = "LAST",
+  keepAllFiles = TRUE,
+  outputFile = here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "multivariate"
+ )
+)
+```
+
+
+
+Move the files to bivariate directory
+```{bash mv_bivariate_files, eval=FALSE}
+rm output/local_adaptation/sambada/multivariate/*;
+mv output/local_adaptation/sambada/multivariate-* output/local_adaptation/sambada/multivariate;
+mv output/local_adaptation/sambada/genomic_file-mark* output/local_adaptation/sambada/multivariate;
+mv output/local_adaptation/sambada/*param* output/local_adaptation/sambada/multivariate
+```
+
+Download the data from the cluster
+```{bash, eval=FALSE}
+rsync -chavzP --stats lvc26@mccleary.ycrc.yale.edu:/ycga-gpfs/project/caccone/lvc26/sambada_brazil/output/local_adaptation/sambada/multivariate /Users/lucianocosme/Library/CloudStorage/Dropbox/popgen/brazil/aegypti/output/local_adaptation/sambada/
+```
+
+
+## 4.3 Post-processing
+
+### 4.3.1 Prepare the output
+
+Read sambada's output and prepare it by retrieving the snp position and chromosome.
+```{r prepare_output_univariate, warning=FALSE, message=FALSE, eval=FALSE}
+# univariate model
+prep_uni = prepareOutput(
+  sambadaname = here("output", "local_adaptation", "sambada", "univariate", "univariate"),
+  dimMax = 1,
+  popStr = FALSE,
+  gdsFile = here("output", "local_adaptation", "sambada", "brazil.gds"),
+  interactiveChecks = FALSE
+)
+```
+
+Bivariate model
+```{r prepare_output_bivariate, warning=FALSE, message=FALSE, eval=FALSE}
+# bivariate model
+prep_bi = prepareOutput(
+  sambadaname = here("output", "local_adaptation", "sambada", "bivariate", "bivariate"),
+  dimMax = 2,
+  popStr = TRUE,
+  gdsFile = here("output", "local_adaptation", "sambada", "brazil.gds"),
+  interactiveChecks = FALSE
+)
+```
+
+
+Multivariate model
+```{r prepare_output_multivariate, warning=FALSE, message=FALSE, eval=FALSE}
+# bivariate model
+prep_multi = prepareOutput(
+  sambadaname = here("output", "local_adaptation", "sambada", "multivariate", "multivariate"),
+  dimMax = 6,
+  popStr = TRUE,
+  gdsFile = here("output", "local_adaptation", "sambada", "brazil.gds"),
+  interactiveChecks = FALSE
+)
+```
+## 5. Correction for multiple testing
+
+### 5.1 Univariate model
+
+Import the data
+```{r import_data_for_correction_univariate, message=FALSE, eval=FALSE}
+# read result file for univariate model
+uni_res.1 <- read_delim(
+  here("output", "local_adaptation", "sambada", "univariate", "univariate-Out-1.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+
+# read the result file for the null models
+uni_res.0 <- read_delim(
+  here("output", "local_adaptation", "sambada", "univariate", "univariate-Out-0.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+```
+
+Check the null model
+```{r check_uni_res.0, eval=FALSE}
+head(uni_res.0)
+```
+```{r, eval=FALSE}
+head(uni_res.1)
+```
+
+Reshape data
+```{r reshape_uni, eval=FALSE}
+# drop the last column in both files since they are null
+# null model
+uni_res.1 <-
+  uni_res.1 |>
+  dplyr::select(1:15)
+
+# bivariate model
+uni_res.0 <-
+  uni_res.0 |> 
+  dplyr::select(1:5)
+
+# remove unconverted models (i.e. models with an error)
+# this code keeps only the rows of bi_res.1 where the value in the NumError column is equal to 0, and removes all other rows. T
+uni_res.1 <- 
+  uni_res.1 |>
+  filter(NumError == 0)
+
+# Check number of monomorphic markers
+uni_res.0 |>
+  count(NumError)
+
+# Keep the number of polymorphic markers as reference
+numMark <-
+  uni_res.0 |>
+  count(NumError) |>
+  filter(row_number() == 1) |>
+  pull(n)
+```
+
+Check variables and columns
+```{bash check_n_env_variables_uni, eval=FALSE}
+# check the file
+head -n 1 output/local_adaptation/sambada/env_file_filtered.csv;
+
+# count how many columns
+echo "Number of columns:";
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv
+
+# we have the first columns as IDs and the last column as population structure
+echo "Number of environmental variables"
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv |  expr $(cat) - 1
+```
+
+Calculate thresholds
+
+```{r thresholds_uni, eval=FALSE}
+# Number of environmental variables
+## Insert correct number here
+numEnv=21
+
+# Choice of alpha (could be 0.01)
+alpha=0.001
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a score higher than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", SamBada enforce this threshold for both G and Wald scores. One can also use a single test (G or Wald) for assessing significance.
+# Note: The number of degree of freedom (df) is 1 since we compare models involving one env var with models without any env var
+score.threshold=qchisq(alpha/(numEnv*numMark), 1, lower.tail=F)
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a p-value lower than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", Sambada enforce this threshold for both G and Wald p-values. One can also use a single test (G or Wald) for assessing significance.
+pVal.threshold=alpha/(numEnv*numMark)
+```
+
+Now we can calculate p values
+```{r compute_pvalues_uni, eval=FALSE}
+# computing p-values
+uni_res.1 = cbind(
+  uni_res.1,
+  pvalG = pchisq(uni_res.1$Gscore, 1, lower.tail = F),
+  pvalWald = pchisq(uni_res.1$WaldScore, 1, lower.tail = F)
+)
+
+# Selecting models passing the G test (p-value for G score lower than the threshold)
+# bi_res.1[bi_res.1$pvalG<pVal.threshold,] # base R
+uni_res_passG <-
+  uni_res.1 |>
+  filter(pvalG < pVal.threshold)
+
+# check output
+head(uni_res_passG)
+```
+
+
+```{r}
+# The SamBada algorithm did not produce any data for a null model, it means that the model did not
+# find any significant relationships between the predictor variables and the response variable, or
+# that the model failed to converge or encountered some other technical issue. A null model typically
+# includes only the intercept or a constant term, and no predictor variables. It is used as a
+# reference model to compare the performance of more complex models that include predictor variables.
+# If the null model is the best fitting model based on some criterion, it suggests that the predictor
+# variables do not contribute significantly to explaining the variation in the response variable, and
+# that the intercept alone provides the best estimate of the mean response.
+```
+
+
+
+
+### 5.2 Bivariate model
+
+Import the data
+```{r import_data_for_correction_bivariate, message=FALSE, eval=FALSE}
+# read result file for bivariate model
+bi_res.1 <- read_delim(
+  here("output", "local_adaptation", "sambada", "bivariate", "bivariate-Out-1.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+
+# read the result file for the null models
+bi_res.0 <- read_delim(
+  here("output", "local_adaptation", "sambada", "bivariate", "bivariate-Out-0.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+```
+
+Check the null model
+```{r check_bi_res.0, eval=FALSE}
+head(bi_res.0)
+```
+
+Check the bivariate model
+```{r check_bi_res.1b, eval=FALSE}
+head(bi_res.1)
+```
+
+Reshape data
+```{r reshape_bi, eval=FALSE}
+# drop the last column in both files since they are null
+# null model
+bi_res.1 <-
+  bi_res.1 |>
+  dplyr::select(1:15)
+
+# bivariate model
+bi_res.0 <-
+  bi_res.0 |> 
+  dplyr::select(1:5)
+
+# remove unconverted models (i.e. models with an error)
+# this code keeps only the rows of bi_res.1 where the value in the NumError column is equal to 0, and removes all other rows. T
+bi_res.1 <- 
+  bi_res.1 |>
+  filter(NumError == 0)
+
+# Check number of monomorphic markers
+bi_res.0 |>
+  count(NumError)
+
+# Keep the number of polymorphic markers as reference
+numMark <-
+  bi_res.0 |>
+  count(NumError) |>
+  filter(row_number() == 1) |>
+  pull(n)
+```
+
+Check variables and columns
+```{bash check_n_env_variables, eval=FALSE}
+# check the file
+head -n 1 output/local_adaptation/sambada/env_file_filtered.csv;
+
+# count how many columns
+echo "Number of columns:";
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv
+
+# we have the first columns as IDs and the last column as population structure
+echo "Number of environmental variables"
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv |  expr $(cat) - 1
+```
+
+Calculate thresholds
+
+```{r thresholds_bi, eval=FALSE}
+# Number of environmental variables
+## Insert correct number here
+numEnv=21
+
+# Choice of alpha (could be 0.01)
+alpha=0.001
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a score higher than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", SamBada enforce this threshold for both G and Wald scores. One can also use a single test (G or Wald) for assessing significance.
+# Note: The number of degree of freedom (df) is 1 since we compare models involving one env var with models without any env var
+score.threshold=qchisq(alpha/(numEnv*numMark), 1, lower.tail=F)
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a p-value lower than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", Sambada enforce this threshold for both G and Wald p-values. One can also use a single test (G or Wald) for assessing significance.
+pVal.threshold=alpha/(numEnv*numMark)
+```
+
+Now we can calculate p values
+```{r compute_pvalues, eval=FALSE}
+# computing p-values
+bi_res.1 = cbind(
+  bi_res.1,
+  pvalG = pchisq(bi_res.1$Gscore, 1, lower.tail = F),
+  pvalWald = pchisq(bi_res.1$WaldScore, 1, lower.tail = F)
+)
+
+# Selecting models passing the G test (p-value for G score lower than the threshold)
+# bi_res.1[bi_res.1$pvalG<pVal.threshold,] # base R
+bi_res_passG <-
+  bi_res.1 |>
+  filter(pvalG < pVal.threshold)
+
+# check output
+head(bi_res_passG)
+```
+
+We can use different alpha
+```{r test_different_alpha, eval=FALSE}
+# check if there are significant models if setting alpha to 0.05 ( will give you 169 genotypes)
+# alpha=0.01
+# pVal.threshold=alpha/(numEnv*numMark)
+# bi_res.1[bi_res.1$pvalG<pVal.threshold,]
+
+# check if there are significant models if setting alpha to 0.001 (will give you 70 genotypes)
+alpha=0.001
+pVal.threshold=alpha/(numEnv*numMark)
+bi_res_passG_001 <- bi_res.1[bi_res.1$pvalG<pVal.threshold,]
+```
+
+```{r, eval=FALSE}
+head(bi_res_passG_001)
+```
+
+
+
+
+However, we see that only the population structure was associated with the genotypes. We will need to run fastStructure
+or Admixture to see the population structure in our data. Preliminary PCA analysis showed us that we have structure in
+our data. We used the default options with the first run of R.SamBada. Now, we have to refine our analysis using
+covariates for the population structure or removing populations.
+
+
+### 5.3 Multivariate model
+
+Import the data
+```{r import_data_for_correction_multivariate, message=FALSE, eval=FALSE}
+# read result file for multivariate model
+multi_res.1 <- read_delim(
+  here("output", "local_adaptation", "sambada", "multivariate", "multivariate-Out-1.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+
+# read the result file for the null models
+multi_res.0 <- read_delim(
+  here("output", "local_adaptation", "sambada", "multivariate", "multivariate-Out-0.csv"),
+  delim = " ",
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+```
+
+Check the null model
+```{r check_bi_res.0b, eval=FALSE}
+head(multi_res.0)
+```
+
+Check the bivariate model
+```{r check_bi_res.1, eval=FALSE}
+head(multi_res.1)
+```
+
+Reshape data
+```{r reshape_multi, eval=FALSE}
+# drop the last column in both files since they are null
+# null model
+multi_res.1 <-
+  multi_res.1 |>
+  dplyr::select(1:15)
+
+# bivariate model
+multi_res.0 <-
+  multi_res.0 |> 
+  dplyr::select(1:5)
+
+# remove unconverted models (i.e. models with an error)
+# this code keeps only the rows of bi_res.1 where the value in the NumError column is equal to 0, and removes all other rows. T
+multi_res.1 <- 
+  multi_res.1 |>
+  filter(NumError == 0)
+
+# Check number of monomorphic markers
+multi_res.0 |>
+  count(NumError)
+
+# Keep the number of polymorphic markers as reference
+numMark <-
+  multi_res.0 |>
+  count(NumError) |>
+  filter(row_number() == 1) |>
+  pull(n)
+```
+
+Check variables and columns
+```{bash check_n_env_variablesM, eval=FALSE}
+# check the file
+head -n 1 output/local_adaptation/sambada/env_file_filtered.csv;
+
+# count how many columns
+echo "Number of columns:";
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv
+
+# we have the first columns as IDs and the last column as population structure
+echo "Number of environmental variables"
+awk -F ' ' 'NR==1 {print NF}' output/local_adaptation/sambada/env_file_filtered.csv |  expr $(cat) - 1
+```
+
+Calculate thresholds
+
+```{r thresholds_multi, eval=FALSE}
+# Number of environmental variables
+## Insert correct number here - 
+numEnv=21
+
+# Choice of alpha (could be 0.01)
+alpha=0.001
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a score higher than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", SamBada enforce this threshold for both G and Wald scores. One can also use a single test (G or Wald) for assessing significance.
+# Note: The number of degree of freedom (df) is 1 since we compare models involving one env var with models without any env var
+score.threshold=qchisq(alpha/(numEnv*numMark), 1, lower.tail=F)
+
+# Score threshold for model significance (same value for G and Wald)
+# Models with a p-value lower than this value are considered as significant.
+# When using the option "SIGNIF" or "BEST", Sambada enforce this threshold for both G and Wald p-values. One can also use a single test (G or Wald) for assessing significance.
+pVal.threshold=alpha/(numEnv*numMark)
+```
+
+Now we can calculate p values
+```{r compute_pvalues_multi, eval=FALSE}
+# computing p-values
+multi_res.1 = cbind(
+  multi_res.1,
+  pvalG = pchisq(multi_res.1$Gscore, 1, lower.tail = F),
+  pvalWald = pchisq(multi_res.1$WaldScore, 1, lower.tail = F)
+)
+
+# Selecting models passing the G test (p-value for G score lower than the threshold)
+# bi_res.1[bi_res.1$pvalG<pVal.threshold,] # base R
+multi_res_passG <-
+  multi_res.1 |>
+  filter(pvalG < pVal.threshold)
+
+# Split the Marker column
+split_data <- strsplit(as.character(multi_res_passG$Marker), "_")
+
+# Extract the SNP and Genotype data
+multi_res_passG$SNP <- sapply(split_data, `[`, 1)
+multi_res_passG$Genotype <- sapply(split_data, `[`, 2)
+
+# check output
+head(multi_res_passG)
+```
+
+We can count how many genotypes and how many SNPs we have
+```{r, eval=FALSE}
+# Count unique Markers (Genotypes)
+num_genotypes <- length(unique(multi_res_passG$Marker))
+
+# Count unique SNPs
+num_snps <- length(unique(multi_res_passG$SNP))
+
+# Print the information
+cat("Number of Genotypes:", num_genotypes, "\n")
+cat("Number of SNPs:", num_snps, "\n")
+```
+
+
+Save it as csv
+```{r, eval=FALSE}
+write_excel_csv(
+  multi_res_passG,
+  file      = here(
+    "output", "local_adaptation", "sambada", "multi_pass.csv"
+  ),
+  delim = ",",
+  quote     = NULL
+)
+```
+
+
+We can save the list of SNPs
+```{r, eval=FALSE}
+# Save it
+write.table(
+  unique(multi_res_passG$SNP),
+  file = here("output", "local_adaptation", "sambada","brazil_SNPs_sambada.txt"),
+  row.names = FALSE,
+  quote = FALSE,
+  col.names = FALSE,
+  sep = "\n"
+)
+```
+
+### 5.4 Venn diagram with results from outFlank and pcadapt
+
+
+```{r, fig.height=8, fig.width=8}
+library(ggvenn)
+# Read data from txt files
+outflank_snps <-
+  read.table(
+    here("output", "local_adaptation", "outflank", "brazil_SNPs_outFlank.txt"),
+    stringsAsFactors = FALSE
+  ) |>
+  drop_na()
+
+pcadapt_snps <-
+  read.table(
+    here("output", "local_adaptation", "pcadapt", "brazil_SNPs_pcadapt.txt"),
+    stringsAsFactors = FALSE
+  )
+
+sambada_snps <-
+  read.table(
+    here("output", "local_adaptation", "sambada", "brazil_SNPs_sambada.txt"),
+    stringsAsFactors = FALSE
+  )
+
+# Create a list with all dataframes
+list_of_clusters <- list("outFlank" = outflank_snps$V1, "pcadapt" = pcadapt_snps$V1, "sambada" = sambada_snps$V1)
+
+
+# Create Venn diagram
+venn_diagram <- ggvenn(list_of_clusters, fill_color = c("steelblue", "darkorange", "pink"))
+print(venn_diagram)
+
+# Find common SNPs
+common_SNPs <- Reduce(intersect, list_of_clusters)
+
+# Save the shared SNP ids into a txt file
+write.table(
+  common_SNPs,
+  file = here("output", "local_adaptation", "common_SNPs_pcadapt_outflank_sambada.txt"),
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+
+# Identify shared SNPs for each pairwise comparison
+shared_snps_outFlank_pcadapt <- intersect(outflank_snps$V1, pcadapt_snps$V1)
+shared_snps_outFlank_sambada <- intersect(outflank_snps$V1, sambada_snps$V1)
+shared_snps_pcadapt_sambada <- intersect(pcadapt_snps$V1, sambada_snps$V1)
+
+# Save the shared SNPs for each pairwise comparison into separate txt files
+write.table(
+  shared_snps_outFlank_pcadapt,
+  file = here("output", "local_adaptation", "shared_SNPs_outFlank_pcadapt.txt"),
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+write.table(
+  shared_snps_outFlank_sambada,
+  file = here("output", "local_adaptation", "shared_SNPs_outFlank_sambada.txt"),
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+write.table(
+  shared_snps_pcadapt_sambada,
+  file = here("output", "local_adaptation", "shared_SNPs_pcadapt_sambada.txt"),
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+
+# Get the SNPs shared by at least two methods
+snps_shared_by_at_least_two <- unique(c(shared_snps_outFlank_pcadapt, 
+                                        shared_snps_outFlank_sambada, 
+                                        shared_snps_pcadapt_sambada))
+
+# Save the SNPs shared by at least two methods into a txt file
+write.table(
+  snps_shared_by_at_least_two,
+  file = here("output", "local_adaptation", "SNPs_shared_by_at_least_two.txt"),
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE
+)
+
+# # Save Venn diagram to PDF
+output_path <- here("output", "local_adaptation", "figures", "significant_snps.pdf")
+ggsave(output_path, venn_diagram, height = 5, width = 5, dpi = 300)
+```
+
+We can subset the SNPs identified by at least two algorithms
+```{r, eval=FALSE}
+subset_multi_res_passG <- multi_res_passG[multi_res_passG$SNP %in% snps_shared_by_at_least_two, ]
+
+# View the first few rows of the subsetted data
+head(subset_multi_res_passG)
+
+```
+
+## 6. Manhattan plots
+
+## 6.1 Using ggplot2
+
+We can add the genomic coordinates in our data to create a Manhattan plot using ggplot.
+
+```{r, eval=FALSE}
+# Extract unique environment names
+env_names <- unique(prep_multi$sambadaOutput$Env_1)
+
+# threshold
+y_val <- -log10(0.001)
+
+
+# Generate plots for each environment
+plot_list <- lapply(env_names, function(env) {
+  # Subset the data based on the environment
+  subset_data <- subset(prep_multi$sambadaOutput, Env_1 == env)
+  
+  # Add a highlight column based on qvalueG threshold
+  subset_data$highlight <- subset_data$qvalueG < 0.001
+  
+  # Create the plot for the subset data
+ p <- ggplot(subset_data, aes(x = pos, y = -log10(qvalueG))) +
+    geom_point(aes(color = as.factor(chr)), size = .5) +  # Convert chr to factor
+    geom_point(data = subset(subset_data, highlight == TRUE), aes(color = "Highlight"), size = .5) +
+    geom_hline(yintercept = y_val, color = "red", linetype = "dashed") +  # This line adds the red dashed line
+
+    scale_color_manual(values = c(color_vector, "Highlight" = "magenta"), guide = "none") +
+    labs(title = paste0("sambada Brazil - ", env), x = "Position", y = "-log10(p-value)") +
+    facet_wrap(~ chr, scales = "free_x") +
+    scale_x_continuous(labels = k_format) +
+    my_theme() +
+    theme(panel.spacing = unit(.2, "lines"),
+          plot.margin = unit(c(1, 1, 2, 2), "lines"),
+          plot.caption = element_markdown(face = "italic", color = "#574E4E", halign = 0.5)) +
+    labs(caption = "*Genotypes highlighted in magenta were identified as significant by sambada (p<0.001),*<br> and the loci was identified as outlier by pcadapt or outFlank.") +
+    geom_text_repel(
+      data = subset(subset_data, pvalueG == min(pvalueG)), # Assuming min_pval_snps contains the SNP with minimum p-value in each subset
+      aes(label = snp),
+      size = 3,
+      nudge_y = 0.01,
+      segment.color = NA,
+      max.overlaps = Inf
+    )
+  
+  return(p)
+})
+
+# Display plots (e.g., for the first environment)
+print(plot_list[[1]]) # change the number to show the other variables
+# the variables
+#  env_names
+#  [1] "bio14"     "prec3"     "bio13"     "prec11"    "bio2"      "bio3"     
+#  [7] "bio19"     "prec1"     "bio18"     "prec10"    "bio12"     "bio1"     
+# [13] "prec6"     "Latitude"  "bio5"      "Longitude"
+```
+
+
+```{r, fig.height=10, fig.width=8, eval=FALSE}
+# Given y_val for the red line
+y_val <- -log10(0.001)
+
+# SNPs to highlight
+prep_multi$sambadaOutput$significant_snp <- prep_multi$sambadaOutput$Marker %in% subset_multi_res_passG$Marker
+
+
+# threshold
+y_val <- -log10(0.001)
+
+# Add a highlight column based on qvalueG threshold and significant_snp
+prep_multi$sambadaOutput$highlight <- prep_multi$sambadaOutput$qvalueG < 0.001 & prep_multi$sambadaOutput$significant_snp
+
+# Create the main plot using the whole dataset
+p <- ggplot(prep_multi$sambadaOutput, aes(x = pos, y = -log10(qvalueG))) +
+
+  # Plotting regular points
+  geom_point(aes(color = as.factor(chr)), size = .5) +
+
+  # Highlighted points based on 'highlight'
+  geom_point(data = subset(prep_multi$sambadaOutput, highlight == TRUE), aes(color = "Highlight"), size = .5) +
+
+  # Red line for p-value = 0.001
+  geom_hline(yintercept = y_val, color = "red", linetype = "dashed") +
+
+  # Color settings and other customizations
+  scale_color_manual(values = c(color_vector, "Highlight" = "magenta"), guide = "none") +
+  labs(title = "sambada Brazil", x = "Position", y = "-log10(p-value)") +
+  scale_x_continuous(labels = k_format) +
+  my_theme() +
+  theme(panel.spacing = unit(.2, "lines"),
+        plot.margin = unit(c(1, 1, 2, 2), "lines"),
+        plot.caption = element_markdown(face = "italic", color = "#574E4E", halign = 0.5)) +
+  labs(caption = "*Genotypes highlighted in magenta were identified as significant by sambada (p<0.001),*<br> and the loci was identified as outlier by pcadapt or outFlank. <br> Red line pvalue = 0.001.") +
+  geom_text_repel(
+    data = subset(prep_multi$sambadaOutput, highlight == TRUE),
+    aes(label = snp),
+    size = 1.5,
+    nudge_y = 0.01,
+    segment.color = "gray",
+    max.overlaps = Inf
+  ) +
+
+
+  # Facet by Env_1 as rows and chr as columns
+  facet_grid(rows = vars(Env_1), cols = vars(chr), scales = "free_x")
+
+print(p)
+
+
+
+# Save the plot
+ggsave(
+  here(
+    "output", "local_adaptation", "figures", "sambada_all_variables.pdf"
+  ),
+  width  = 8,
+  height = 16,
+  units  = "in"
+)
+```
+
+
+## 7. Checking the functinal annotation of the SNPs
+
+We can grep the SNPs identified by at least 2 algorithms from the annotated variants file
+
+For example, the 2 SNPs identified by all 3 algorithms
+```{bash}
+grep -Ff output/local_adaptation/common_SNPs_pcadapt_outflank_sambada.txt output/snpeff/chip_ann.txt | awk -F'|' '{for (i=1; i<NF; i++) printf "%s|", $i; print ""}' | head
+```
+
+We can parse the output
+```{bash}
+grep -Ff output/local_adaptation/common_SNPs_pcadapt_outflank_sambada.txt output/snpeff/chip_ann.txt | \
+awk -F'\t' '{print "SNP ID: "$4; split($5,a,"|"); print "Variant: "a[2]; print "Gene: "a[4]; print "--------"}' | head
+```
+
+
+The 5 SNPs found by outFlank or pcadapt
+```{bash}
+# grep -Ff output/local_adaptation/shared_SNPs_outFlank_pcadapt.txt output/snpeff/chip_ann.txt | awk -F'|' '{for (i=1; i<NF; i++) printf "%s|", $i; print ""}' | head
+grep -Ff output/local_adaptation/shared_SNPs_outFlank_pcadapt.txt output/snpeff/chip_ann.txt | \
+awk -F'\t' '{print "SNP ID: "$4; split($5,a,"|"); print "Variant: "a[2]; print "Gene: "a[4]; print "--------"}' | head
+```
+
+The 44 SNPs found by at least 2 algorithms ()
+```{bash}
+# grep -Ff output/local_adaptation/SNPs_shared_by_at_least_two.txt output/snpeff/chip_ann.txt | awk -F'|' '{for (i=1; i<NF; i++) printf "%s|", $i; print ""}' | head
+grep -Ff output/local_adaptation/SNPs_shared_by_at_least_two.txt output/snpeff/chip_ann.txt | \
+awk -F'\t' '{print "SNP ID: "$4; split($5,a,"|"); print "Variant: "a[2]; print "Gene: "a[4]; print "--------"}' | head
+```
+
+
+We can parse it better to import to R
+
+```{bash}
+# Define input and output files
+infile="output/snpeff/chip_ann.txt"
+outfile="output/local_adaptation/SNPs_local_adaptation.txt"
+
+# Header line
+echo -e "Chromosome\tPosition\tSNP\tVariantType\tGene\tTranscript\tGeneType\tNucleotideChange\tAminoAcidChange" > $outfile
+
+# Parse data
+grep -Ff output/local_adaptation/SNPs_shared_by_at_least_two.txt $infile | \
+awk -F'\t' '{
+    chrom=$1; pos=$2; snp_id=$4; info=$5;
+    n = split(info, arr, ",");  # Split annotations by comma
+    for(i = 1; i <= n; i++) {
+        split(arr[i], fields, "|");
+        var_type = fields[2];
+        gene = fields[4];
+        transcript = fields[7];
+        gene_type = fields[8];
+        
+        # Extract nucleotide change (either starting with c. or n.)
+        if(match(fields[10], /[cn]\.[^>]+>(.)/, m)) {
+            change = substr(fields[10], RSTART+3, RLENGTH-4);
+            nuc_change = substr(change, length(change)-1, 1) ">" m[1];
+        } else {
+            nuc_change = "NA";
+        }
+        
+        # Extract amino acid change
+        if(match(fields[11], /p\.(.+)/, m_aa)) {
+            aa_change = m_aa[1];
+        } else {
+            aa_change = "NA";
+        }
+        
+        print chrom"\t"pos"\t"snp_id"\t"var_type"\t"gene"\t"transcript"\t"gene_type"\t"nuc_change"\t"aa_change;
+    }
+}' >> $outfile
+```
+
+
+Check the output
+```{bash}
+head output/local_adaptation/SNPs_local_adaptation.txt
+```
+
+We can make a table for publication
+```{r}
+library(officer)
+library(flextable)
+
+
+# Import the data
+snps_data <- read.table(here("output", "local_adaptation", "SNPs_local_adaptation.txt"), 
+                        header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# We have the transcript but not of them are different nucleotide change, so we can remove it
+# Remove the Transcript column and keep only unique Gene entries
+snps_data <- snps_data |>
+  dplyr::select(-Transcript) |>
+  distinct(Gene, .keep_all = TRUE)
+
+# Create a flextable
+snps_table <- flextable(snps_data)
+
+# Apply the zebra theme
+snps_table <- theme_zebra(snps_table, 
+                          odd_header = "#CFCFCF", 
+                          odd_body = "#EFEFEF", 
+                          even_header = "transparent", 
+                          even_body = "transparent")
+
+# Add a caption
+snps_table <- set_caption(snps_table, caption = "Summary of SNPs")
+
+# Save to a Word document
+doc <- read_docx()
+doc <- body_add_flextable(doc, snps_table)
+print(doc, target = here("output", "local_adaptation", "SNPs_local_adaptation.docx"))
+snps_table
+```
+
+## 8. Maps with the frequency of the alleles
+
+We can estimate the frequencies of the alleles for the SNPs identified by at least two algorithms
+
+```{bash}
+for fam in $(awk '{print $1}' output/local_adaptation/outflank/brazil.fam | sort | uniq); 
+do 
+echo $fam | \
+plink2 \
+--allow-extra-chr \
+--silent \
+--keep-allele-order \
+--bfile output/local_adaptation/outflank/brazil \
+--keep-fam /dev/stdin \
+--out output/local_adaptation/frequencies/$fam \
+--freq \
+--extract output/local_adaptation/SNPs_shared_by_at_least_two.txt
+done
+```
+
+```{bash}
+head output/local_adaptation/frequencies/ARA.afreq
+```
+
+
+Now create a file for each SNP
+```{bash}
+# # Create a list of unique SNPs
+# unique_snps=$(awk 'NR>1 {print $2}' output/local_adaptation/frequencies/*.afreq | sort | uniq)
+# 
+# # For each unique SNP
+# for snp in $unique_snps; do
+#   # Create the header for the output file
+#   echo -e "SNP\tStratum\tA\tT" > output/local_adaptation/snp_files/${snp}.txt
+#   
+#   # Loop through each family's frequency file
+#   for file in output/local_adaptation/frequencies/*.afreq; do
+#     family=$(basename $file .afreq)  # Extract the family name from the filename
+#     # Extract the frequency for the SNP from the current family file and append to the SNP's file
+#     awk -v snp="$snp" -v family="$family" 'NR>1 && $2 == snp {print $2 "\t" family "\t" (1-$5) "\t" $5}' $file >> output/local_adaptation/snp_files/${snp}.txt
+#   done
+# done
+
+```
+
+```{bash}
+# Create a directory for the SNP files if it doesn't exist
+mkdir -p output/local_adaptation/snp_files
+
+# Create a list of unique SNPs
+unique_snps=$(awk 'NR>1 {print $2}' output/local_adaptation/frequencies/*.afreq | sort | uniq)
+
+# For each unique SNP
+for snp in $unique_snps; do
+    # Create an empty temporary file
+    > output/local_adaptation/snp_files/${snp}_tmp.txt
+  
+    # Loop through each family's frequency file
+    for file in output/local_adaptation/frequencies/*.afreq; do
+        family=$(basename $file .afreq)  # Extract the family name from the filename
+        
+        # Extract the frequency for the SNP from the current family file and append to the SNP's file
+        awk -v snp="$snp" -v family="$family" 'NR>1 && $2 == snp {print $2 "\t" family "\t" (1-$5) "\t" $5}' $file >> output/local_adaptation/snp_files/${snp}_tmp.txt
+        
+        # If the SNP file does not exist yet, create it with a header using the appropriate alleles
+        if [[ ! -f output/local_adaptation/snp_files/${snp}.txt ]]; then
+            alleles=$(awk -v snp="$snp" 'NR>1 && $2 == snp {print $3 "\t" $4}' $file | head -n 1)
+            echo -e "SNP\tStratum\t$alleles" > output/local_adaptation/snp_files/${snp}.txt
+        fi
+    done
+  
+    # Append the extracted data to the SNP file
+    cat output/local_adaptation/snp_files/${snp}_tmp.txt >> output/local_adaptation/snp_files/${snp}.txt
+    rm output/local_adaptation/snp_files/${snp}_tmp.txt
+  
+done
+
+```
+
+
+```{r}
+library(gstudio)
+library(ggmap)
+# # Enter your key here
+register_google(key = "YOUR_KEY_HERE", write = F)
+```
+
+Import data
+```{r}
+brazil<-read.table(here("output","local_adaptation","brazil_locations.csv"), header = T, sep = ",")
+# pull out the coordinates - Population is the default stratums
+coords <- strata_coordinates(brazil)
+coords$Stratum <- as.character(coords$Stratum )
+coords[1:5,]
+
+
+p4<- get_map(location= "Brazil", zoom = 4, source = "google", maptype="roadmap") 
+ggmap(p4)
+```
+
+Plot the two miss sense SNPs
+```{r, warning=FALSE}
+# Load required libraries
+library(dplyr)
+library(scatterpie)
+library(ggmap)
+
+# Read data
+input_path <-
+  here("output", "local_adaptation", "snp_files", "AX-93233819.txt")
+AAEL005582 <- read.table(
+  input_path,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  colClasses = c("character")
+)
+
+# Join data
+coords2 <- inner_join(coords, AAEL005582, by = "Stratum")
+
+# Convert specific columns to numeric
+coords2[, 5] <- as.numeric(as.character(coords2[, 5]))
+coords2[, 6] <- as.numeric(as.character(coords2[, 6]))
+
+# Create base map
+tenmile.map <-
+  ggmap(p4,
+        extent = "device",
+        ylab = "Latitude",
+        xlab = "Longitude")
+
+# Add scatterpie points and annotations
+p <- tenmile.map +
+  geom_scatterpie(
+    aes(x = Longitude, y = Latitude, group = Stratum),
+    data = coords2,
+    cols = c("T", "C"),
+    legend_name = "Allele"
+  ) +
+  scale_fill_manual(labels = c("T (Leu)", "C (Ser)"),
+                    values = c("#bbfc67", "#fa56ef")) +
+  
+  geom_text(
+    aes(
+      x = Longitude,
+      y = Latitude,
+      label = Stratum,
+      vjust = -.2,
+      hjust = -.6,
+      fontface = 'bold'
+    ),
+    data = coords2,
+    size = 2.5
+  ) +
+  
+  annotate(
+    geom = "label",
+    label = expression(atop(
+      bold("SNP AX-93233819 in Chr 3 at 404,213,842"),
+      bold("Gene AAEL005582")
+    )),
+    x = Inf,
+    y = Inf,
+    color = "black",
+    vjust = 1.2,
+    hjust = 1,
+    parse = TRUE
+  ) +
+  annotate(
+    geom = "label",
+    label = expression(bold("Leu239Ser")),
+    x = Inf,
+    y = Inf,
+    color = "red",
+    vjust = 4.1,
+    hjust = 1.3,
+    parse = TRUE
+  ) +
+  theme(
+    legend.position = c(0, 1),
+    legend.justification = c(0, 1),
+    legend.text = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold")
+  )
+
+# Display the map
+p
+
+# Save to PDF
+
+output_path <- here("output", "local_adaptation", "maps", "AAEL005582_AX-93233819.pdf")
+
+# Assuming 'p' is your ggplot object
+ggsave(filename = output_path, plot = p, width = 8, height = 7)
+```
+
+```{r, warning=FALSE}
+# Load required libraries
+library(dplyr)
+library(scatterpie)
+library(ggmap)
+
+# Read data
+input_path <-
+  here("output", "local_adaptation", "snp_files", "AX-93228691.txt")
+CYP4G36 <- read.table(
+  input_path,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  colClasses = c("character")
+)
+
+# Join data
+coords2 <- inner_join(coords, CYP4G36, by = "Stratum")
+
+# Convert specific columns to numeric
+coords2[, 5] <- as.numeric(as.character(coords2[, 5]))
+coords2[, 6] <- as.numeric(as.character(coords2[, 6]))
+
+# Create base map
+tenmile.map <-
+  ggmap(p4,
+        extent = "device",
+        ylab = "Latitude",
+        xlab = "Longitude")
+
+# Add scatterpie points and annotations
+p <- tenmile.map +
+  geom_scatterpie(
+    aes(x = Longitude, y = Latitude, group = Stratum),
+    data = coords2,
+    cols = c("A", "G"),
+    legend_name = "Allele"
+  ) +
+  scale_fill_manual(labels = c("T (Leu)", "C (Pro)"),
+                    values = c("#bbfc67", "#fa56ef")) +
+  
+  geom_text(
+    aes(
+      x = Longitude,
+      y = Latitude,
+      label = Stratum,
+      vjust = -.2,
+      hjust = -.6,
+      fontface = 'bold'
+    ),
+    data = coords2,
+    size = 2.5
+  ) +
+  
+  annotate(
+    geom = "label",
+    label = expression(atop(
+      bold("SNP AX-93228691 in Chr 1 at 135,801,159"),
+      bold("Gene CYP4G36")
+    )),
+    x = Inf,
+    y = Inf,
+    color = "black",
+    vjust = 1.2,
+    hjust = 1,
+    parse = TRUE
+  ) +
+  annotate(
+    geom = "label",
+    label = expression(bold("Leu482Pro")),
+    x = Inf,
+    y = Inf,
+    color = "red",
+    vjust = 4.1,
+    hjust = 1.3,
+    parse = TRUE
+  ) +
+  theme(
+    legend.position = c(0, 1),
+    legend.justification = c(0, 1),
+    legend.text = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold")
+  )
+
+# Display the map
+p
+
+# Save to PDF
+
+output_path <- here("output", "local_adaptation", "maps", "CYP4G36_AX-93228691.pdf")
+
+# Assuming 'p' is your ggplot object
+ggsave(filename = output_path, plot = p, width = 8, height = 7)
+```
+
+### 8.1 Plot single SNP per file
+
+We can create a plotting function to plot all SNPs
+```{r}
+plot_file <- function(filename) {
+  
+  # Read data
+  input_path <- here("output", "local_adaptation", "snp_files", filename)
+  data <- read.table(
+    input_path,
+    header = TRUE,
+    sep = "\t",
+    stringsAsFactors = FALSE,
+    colClasses = c("character")
+  )
+  
+  # Join data
+  coords2 <- inner_join(coords, data, by = "Stratum")
+  
+  # Convert specific columns to numeric
+  coords2[, 5] <- as.numeric(as.character(coords2[, 5]))
+  coords2[, 6] <- as.numeric(as.character(coords2[, 6]))
+  
+  allele1 <- colnames(coords2)[5]
+  allele2 <- colnames(coords2)[6]
+  
+  # Extract SNP name from the filename (Assuming the name format remains consistent)
+  snp_name <- gsub(".txt", "", filename)
+  snp_label <- paste("SNP", snp_name)
+
+  # Create base map
+  tenmile.map <- ggmap(p4, extent = "device", ylab = "Latitude", xlab = "Longitude")
+  
+  # Add scatterpie points and annotations
+  p <- tenmile.map +
+    annotate(
+      geom = "text",
+      label = snp_label,
+      x = Inf,
+      y = Inf,
+      color = "black",
+      vjust = 1.2,
+      hjust = 1,
+      size = 5,     # Adjust the text size as desired
+      fontface = "bold"
+    ) +
+    geom_scatterpie(
+      aes(x = Longitude, y = Latitude, group = Stratum),
+      data = coords2,
+      cols = c(allele1, allele2),
+      legend_name = "Allele"
+    ) +
+    scale_fill_manual(labels = c(paste0(allele1), paste0(allele2)),
+                      values = c("#bbfc67", "#fa56ef")) +
+    geom_text(
+      aes(x = Longitude, y = Latitude, label = Stratum, vjust = -.2, hjust = -.6, fontface = 'bold'),
+      data = coords2,
+      size = 2.5
+    ) +
+    theme(
+      legend.position = c(0, 1),
+      legend.justification = c(0, 1),
+      legend.text = element_text(size = 10, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold")
+    )
+  
+  # Save to PDF
+  output_path <- here("output", "local_adaptation", "maps", sub(".txt", ".pdf", filename))
+  ggsave(filename = output_path, plot = p, width = 8, height = 7)
+}
+
+```
+
+```{bash}
+# rm output/local_adaptation/snp_files/ID.txt
+```
+
+
+Create plots with our function
+```{r}
+file_list <- list.files(path = here("output", "local_adaptation", "snp_files"), pattern = "\\.txt$", full.names = FALSE)
+lapply(file_list, plot_file)
+```
+
+### 8.2 Plot all SNPs in one file
+
+Prepare the data
+```{r}
+files <- list.files(path = here("output", "local_adaptation", "snp_files"), pattern = "*.txt", full.names = TRUE)
+
+all_data <- lapply(files, function(file) {
+  dat <- read.table(
+    file,
+    header = TRUE,
+    sep = "\t",
+    stringsAsFactors = FALSE,
+    colClasses = c("character")
+  )
+  
+  # Storing allele names from columns 3 and 4
+  allele_names <- colnames(dat)[3:4]
+  
+  # Renaming columns 3 and 4
+  colnames(dat)[3:4] <- c("Allele1_Value", "Allele2_Value")
+  
+  # Add the allele names as new columns
+  dat$Allele1_Name <- allele_names[1]
+  dat$Allele2_Name <- allele_names[2]
+  
+  # Add SNP column
+  dat$SNP <- gsub(".txt", "", basename(file))
+  
+  return(dat)
+})
+
+# Binding all data frames
+all_data_df <- do.call(rbind, all_data)
+
+# Ensure that the numeric columns are properly formatted
+coords_all <- inner_join(coords, all_data_df, by = "Stratum")
+coords_all$Allele1_Value <- as.numeric(as.character(coords_all$Allele1_Value))
+coords_all$Allele2_Value <- as.numeric(as.character(coords_all$Allele2_Value))
+
+# Create a new column combining allele name and value for better distinction in the legend
+coords_all$Allele1_combined <- paste0(coords_all$Allele1_Name)
+coords_all$Allele2_combined <- paste0(coords_all$Allele2_Name)
+```
+
+Create plot
+```{r, fig.height=12, fig.width=12}
+# Get distinct allele names for each SNP to annotate the plots
+distinct_alleles <-
+  unique(all_data_df[, c("SNP", "Allele1_Name", "Allele2_Name")])
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filtering the world data to include only Brazil
+brazil_sf <- world |>
+  filter(admin == "Brazil")
+
+# load plotting theme
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+
+p <- ggplot() +
+  geom_sf(data = brazil_sf, fill = "transparent") +
+  geom_scatterpie(
+    data = coords_all,
+    aes(x = Longitude, y = Latitude, group = Stratum),
+    cols = c("Allele1_Value", "Allele2_Value"),
+    pie_scale = 2,
+    color = NA
+  ) +
+  scale_fill_manual(
+    values = c("#bbfc67", "#fa56ef"),
+    labels = c("Allele 1", "Allele 2"),
+    guide = "none"
+  ) +
+  geom_text(
+    data = distinct_alleles,
+    aes(
+      label = paste(Allele1_Name, Allele2_Name, sep = "-"),
+      x = median(coords_all$Longitude),
+      y = max(coords_all$Latitude) + 0.5
+    ),
+    size = 2,
+    vjust = 0.5,
+    hjust = -1,
+    fontface = "bold"
+  ) +
+  theme(
+    legend.position = "top",
+    legend.justification = c(0, 1),
+    legend.text = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(size = 10)
+  ) +
+  facet_wrap( ~ SNP) +
+  labs(x = "Longitude", y = "Latitude") +
+  scale_x_continuous(
+    labels = function(x)
+      abs(x)
+  ) +
+  # scale_y_continuous(
+  #   labels = function(y)
+  #     abs(y)
+  # ) +
+  my_theme()
+
+# View the plot
+print(p)
+
+
+output_path <-
+  here("output", "local_adaptation", "maps", "All_SNPs.pdf")
+ggsave(
+  filename = output_path,
+  plot = p,
+  width = 12,
+  height = 12
+)
+```
+
+
+### 8.3 Plot genotypes with R.sambada
+
+Sambada identifies the genotypes associated with an environmental variable and had a function to plot the presence or absense of the specific genotype. 
+
+
+For example lets plot the first 1: AX-584968304_TT
+```{r plot_map1}
+plotMap(
+  envFile = envFile2,
+  x = 'Longitude',
+  y = 'Latitude',
+  locationProj = 4326,
+  popStrCol = "pop2",
+  gdsFile = gdsFile,
+  markerName = 'AX-93262583_TT',
+  mapType = 'marker',
+  varEnvName = 'bio1',
+  simultaneous = FALSE,
+  saveType = "pdf"
+)
+```
+
+First we find how many genotyes we have associated with bio1, then we have to check if either outflank or pcadapt found the loci as an outlier.
+```{r, eval=FALSE}
+bio1 <- multi_res_passG |>
+  dplyr::filter(Env_1 == "bio1")
+
+filtered_bio1 <- bio1[bio1$SNP %in% snps_shared_by_at_least_two, ]
+filtered_bio1
+```
+
+Summarize the results
+```{r, eval=FALSE}
+unique_snps <- unique(filtered_bio1$SNP)
+num_unique_snps <- length(unique_snps)
+genotype_counts <- filtered_bio1 |>
+  group_by(SNP) |>
+  summarise(num_genotypes = n_distinct(Marker))
+cat("Number of unique SNPs:", num_unique_snps, "\n")
+print(genotype_counts)
+
+```
+
+We have 10 SNPs and for 7 of them there is only 1 genotype associated with bio, but for 2 of them we have 2 genotypes and one has 3 genotypes associated whit bio1.
+
+We can plot the genotypes over the map. For example, the SNP AX-93246190:
+AX-93246190_AA
+AX-93246190_AG	
+AX-93246190_GG
+
+```{r AX-93246190_AA}
+plotMap(
+  envFile = envFile2,
+  x = 'Longitude',
+  y = 'Latitude',
+  locationProj = 4326,
+  popStrCol = "pop2",
+  gdsFile = gdsFile,
+  markerName = 'AX-93246190_AA',
+  mapType = 'marker',
+  varEnvName = 'bio1',
+  simultaneous = FALSE,
+  saveType = "pdf"
+)
+```
+
+```{r AX-93246190_AG}
+plotMap(
+  envFile = envFile2,
+  x = 'Longitude',
+  y = 'Latitude',
+  locationProj = 4326,
+  popStrCol = "pop2",
+  gdsFile = gdsFile,
+  markerName = 'AX-93246190_AG',
+  mapType = 'marker',
+  varEnvName = 'bio1',
+  simultaneous = FALSE,
+  saveType = "pdf"
+)
+```
+
+
+```{r AX-93246190_GG}
+plotMap(
+  envFile = envFile2,
+  x = 'Longitude',
+  y = 'Latitude',
+  locationProj = 4326,
+  popStrCol = "pop2",
+  gdsFile = gdsFile,
+  markerName = 'AX-93246190_GG',
+  mapType = 'marker',
+  varEnvName = 'bio1',
+  simultaneous = FALSE,
+  saveType = "pdf"
+)
+```
+
+
+
+### 8.4 Plot genotypes with ggplot
+
+First, we need to estimate the genotype frequencies for each SNP in our data set that we want to examine.
+
+
+```{bash}
+for fam in $(awk '{print $1}' output/local_adaptation/outflank/brazil.fam | sort | uniq); 
+do 
+echo $fam | \
+plink2 \
+--allow-extra-chr \
+--silent \
+--keep-allele-order \
+--bfile output/local_adaptation/outflank/brazil \
+--keep-fam /dev/stdin \
+--out output/local_adaptation/frequencies/$fam \
+--geno-counts \
+--extract output/local_adaptation/SNPs_shared_by_at_least_two.txt
+done
+```
+
+Get genotype frequencies
+```{bash}
+# Create a directory for the SNP genotype files if it doesn't exist
+mkdir -p output/local_adaptation/genotype_files
+
+# Create a list of unique SNPs
+unique_snps=$(awk 'NR>1 {print $2}' output/local_adaptation/frequencies/*.gcount | sort | uniq)
+
+# For each unique SNP
+for snp in $unique_snps; do
+    # Create an empty temporary file
+    > output/local_adaptation/genotype_files/${snp}_tmp.txt
+  
+    # Loop through each family's genotype count file
+    for file in output/local_adaptation/frequencies/*.gcount; do
+        family=$(basename $file .gcount)  # Extract the family name from the filename
+        
+        # Extract alleles for the SNP from the current family file
+        ref_allele=$(awk -v snp="$snp" 'NR>1 && $2 == snp {print $3}' $file | head -n 1)
+        alt_allele=$(awk -v snp="$snp" 'NR>1 && $2 == snp {print $4}' $file | head -n 1)
+        genotypes="${ref_allele}${ref_allele}\t${ref_allele}${alt_allele}\t${alt_allele}${alt_allele}"
+
+        # Extract genotype frequencies for the SNP from the current family file and append to the SNP's file
+        awk -v snp="$snp" -v family="$family" 'NR>1 && $2 == snp {
+            total_count = $5 + $6 + $7
+            ref_ref_freq = $5 / total_count
+            ref_alt_freq = $6 / total_count
+            alt_alt_freq = $7 / total_count
+            print $2 "\t" family "\t" ref_ref_freq "\t" ref_alt_freq "\t" alt_alt_freq
+        }' $file >> output/local_adaptation/genotype_files/${snp}_tmp.txt
+
+        # If the SNP genotype file does not exist yet, create it with a header using the appropriate alleles
+        if [[ ! -f output/local_adaptation/genotype_files/${snp}.txt ]]; then
+            echo -e "SNP\tStratum\t$genotypes" > output/local_adaptation/genotype_files/${snp}.txt
+        fi
+    done
+
+    # Append the extracted data to the SNP genotype file
+    cat output/local_adaptation/genotype_files/${snp}_tmp.txt >> output/local_adaptation/genotype_files/${snp}.txt
+    rm output/local_adaptation/genotype_files/${snp}_tmp.txt
+done
+
+```
+
+Now we can prepare the data for plotting
+```{r}
+library(dplyr)
+
+files <- list.files(path = here("output", "local_adaptation", "genotype_files"), pattern = "*.txt", full.names = TRUE)
+
+all_data <- lapply(files, function(file) {
+  dat <- read.table(
+    file,
+    header = TRUE,
+    sep = "\t",
+    stringsAsFactors = FALSE,
+    colClasses = c("character")
+  )
+  
+  # Storing genotype names from columns 3 to 5
+  genotype_names <- colnames(dat)[3:5]
+  
+  # Renaming columns 3 to 5
+  colnames(dat)[3:5] <- c("Genotype1_Value", "Genotype2_Value", "Genotype3_Value")
+  
+  # Add the genotype names as new columns
+  dat$Genotype1_Name <- genotype_names[1]
+  dat$Genotype2_Name <- genotype_names[2]
+  dat$Genotype3_Name <- genotype_names[3]
+  
+  # Add SNP column
+  dat$SNP <- gsub(".txt", "", basename(file))
+  
+  return(dat)
+})
+
+# Binding all data frames
+all_data_df <- do.call(rbind, all_data)
+
+# Ensure that the numeric columns are properly formatted
+coords_all <- inner_join(coords, all_data_df, by = "Stratum")
+coords_all$Genotype1_Value <- as.numeric(as.character(coords_all$Genotype1_Value))
+coords_all$Genotype2_Value <- as.numeric(as.character(coords_all$Genotype2_Value))
+coords_all$Genotype3_Value <- as.numeric(as.character(coords_all$Genotype3_Value))
+
+# Create a new column combining genotype name and value for better distinction in the legend
+coords_all$Genotype1_combined <- paste0(coords_all$Genotype1_Name, ": ", coords_all$Genotype1_Value)
+coords_all$Genotype2_combined <- paste0(coords_all$Genotype2_Name, ": ", coords_all$Genotype2_Value)
+coords_all$Genotype3_combined <- paste0(coords_all$Genotype3_Name, ": ", coords_all$Genotype3_Value)
+```
+
+
+Create plot
+```{r, fig.height=12, fig.width=12}
+# Define labels for genotypes
+genotype_labels <- c(
+  "Homozygous Reference",
+  "Heterozygous",
+  "Homozygous Alternative"
+)
+
+# Define the colors for each genotype
+genotype_colors <- c("#bbfc67", "#fa56ef", "#56c1fa")
+
+p <- ggplot() +
+  geom_sf(data = brazil_sf, fill = "transparent") +
+  geom_scatterpie(
+    data = coords_all,
+    aes(x = Longitude, y = Latitude, group = Stratum),
+    cols = c("Genotype1_Value", "Genotype2_Value", "Genotype3_Value"),
+    pie_scale = 2,
+    color = NA
+  ) +
+  scale_fill_manual(
+    values = genotype_colors,
+    labels = genotype_labels,
+    name = "Genotype" # Legend title
+  ) +
+  # geom_text(
+  #   data = distinct_genotypes,
+  #   aes(
+  #     label = paste(Genotype1_Name, Genotype2_Name, Genotype3_Name, sep = "-"),
+  #     x = median(coords_all$Longitude),
+  #     y = max(coords_all$Latitude) + 0.5
+  #   ),
+  #   size = 2,
+  #   vjust = -1,
+  #   hjust = 1,
+  #   fontface = "bold"
+  # ) +
+  labs(
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  my_theme() +
+  theme(
+    legend.position = "top",
+    legend.justification = c(0.5, 1), # Centered
+    legend.text = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(size = 10)
+  ) +
+  facet_wrap(~SNP) +
+  scale_x_continuous(
+    labels = function(x)
+      abs(x)
+  )
+
+# View the plot
+print(p)
+
+output_path <- 
+  here("output", "local_adaptation", "maps", "All_SNPs_Genotypes.pdf")
+ggsave(
+  filename = output_path,
+  plot = p,
+  width = 12,
+  height = 12
+)
+```
+
+We can create a plot for each SNP as we did before
+
+```{r}
+plot_file <- function(filename) {
+  
+  # Read data
+  input_path <- here("output", "local_adaptation", "genotype_files", filename)
+  data <- read.table(
+    input_path,
+    header = TRUE,
+    sep = "\t",
+    stringsAsFactors = FALSE,
+    colClasses = c("character")
+  )
+  
+  # Join data
+  coords2 <- inner_join(coords, data, by = "Stratum")
+  
+  # Convert specific columns to numeric
+  coords2[, 5:7] <- lapply(coords2[, 5:7], function(x) as.numeric(as.character(x)))
+  
+  genotype1 <- colnames(coords2)[5]
+  genotype2 <- colnames(coords2)[6]
+  genotype3 <- colnames(coords2)[7]
+  
+   # Extract SNP name from the filename (Assuming the name format remains consistent)
+  snp_name <- gsub(".txt", "", filename)
+  snp_label <- paste("SNP", snp_name)
+  
+  # Genotype names for the legend
+  genotypes_for_legend <- c(genotype1, genotype2, genotype3)
+  
+  # Create base map
+  tenmile.map <- ggmap(p4, extent = "device", ylab = "Latitude", xlab = "Longitude")
+  
+  # Add scatterpie points and annotations
+  p <- tenmile.map +
+    annotate(
+      geom = "text",
+      label = snp_label,
+      x = Inf,
+      y = Inf,
+      color = "black",
+      vjust = 1.2,
+      hjust = 1,
+      size = 5,     # Adjust the text size as desired
+      fontface = "bold"
+    ) +
+     geom_scatterpie(
+      aes(x = Longitude, y = Latitude, group = Stratum),
+      data = coords2,
+      cols = c(genotype1, genotype2, genotype3),
+      legend_name = "Genotype"
+    ) +
+     scale_fill_manual(
+      labels = genotypes_for_legend, # Use the genotype names
+      values = c("#bbfc67", "#fa56ef", "#56c1fa")
+    ) +
+    geom_text(
+      aes(x = Longitude, y = Latitude, label = Stratum, vjust = -.2, hjust = -.6, fontface = 'bold'),
+      data = coords2,
+      size = 2.5
+    ) +
+    theme(
+      legend.position = c(0, 1),
+      legend.justification = c(0, 1),
+      legend.text = element_text(size = 10, face = "bold"),
+      legend.title = element_text(size = 10, face = "bold")
+    )
+  
+  # Save to PDF with _geno suffix
+  output_path <- here("output", "local_adaptation", "maps", sub(".txt", "_geno.pdf", filename))
+  ggsave(filename = output_path, plot = p, width = 8, height = 7)
+}
+
+
+# Create plots with our function
+file_list <- list.files(path = here("output", "local_adaptation", "genotype_files"), pattern = "\\.txt$", full.names = FALSE)
+lapply(file_list, plot_file)
+
+```
+
+
+### 8.5 Plot genotypes and environmental variables
+
+Plot pies with the environmental variables
+
+```{r, fig.height=6, fig.width=6, eval=FALSE}
+# library(here)
+# library(readr)
+# library(dplyr)
+# library(ggplot2)
+# library(viridis)
+# library(sf)
+# library(rnaturalearth)
+# library(terra)
+# library(scatterpie)
+# library(ggnewscale)
+
+# Provide the filename for the genotype data
+filename <- "AX-93246190.txt"
+
+# Read data
+input_path <- here("output", "local_adaptation", "genotype_files", filename)
+data <- read.table(
+  input_path,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  colClasses = c("character")
+)
+
+# Assuming coords is already loaded
+# Join data
+coords2 <- inner_join(coords, data, by = "Stratum")
+
+# Convert specific columns to numeric
+coords2[, 5:7] <- lapply(coords2[, 5:7], function(x) as.numeric(as.character(x)))
+
+genotype1 <- colnames(coords2)[5]
+genotype2 <- colnames(coords2)[6]
+genotype3 <- colnames(coords2)[7]
+
+# Extract SNP name from the filename
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Genotype names for the legend
+genotypes_for_legend <- c(genotype1, genotype2, genotype3)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio1 <- rast(here("output", "local_adaptation", "sambada", "wc0.5", "bio1.tif"))
+bio1_rescaled <- bio1 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio1_brazil <- crop(bio1_rescaled, brazil)
+bio1_brazil <- mask(bio1_brazil, brazil)
+
+# Convert the raster to a data frame for ggplot
+df_bio1 <- as.data.frame(bio1_brazil, xy = TRUE)
+
+# Source your custom theme
+source(here("scripts", "analysis", "my_theme2.R"))
+
+# Convert raster to polygons
+# Convert SpatRaster to RasterLayer
+bio1_brazil_raster <- raster::raster(bio1_brazil)
+
+# Convert raster to polygons
+bio1_brazil_raster_coarse <- raster::aggregate(bio1_brazil_raster, fact = 5)
+df_bio1_polygon <- raster::rasterToPolygons(bio1_brazil_raster_coarse)
+
+# Pre-assign colors to the scatterpie data based on Stratum
+coords2$pie_fill <- factor(coords2$Stratum, 
+                           levels = c(genotype1, genotype2, genotype3),
+                           labels = c("#bbfc67", "#fa56ef", "#56c1fa"))
+
+# Extract SNP name from the filename (Assuming the name format remains consistent)
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Create base map using ggplot
+p <- ggplot() +
+
+  # Plot raster data directly
+  geom_raster(data = df_bio1, aes(x = x, y = y, fill = bio1)) +
+  scale_fill_viridis_c(name = "Temperature") +
+  
+  # Add the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  
+  # Introduce new scale for pies
+  new_scale_fill() +
+  
+  # Use geom_scatterpie with corrected genotype column names
+  geom_scatterpie(
+    aes(x = Longitude, y = Latitude, group = Stratum, fill = factor(pie_fill)),
+    data = coords2,
+    cols = c("GG", "GA", "AA"),
+    size = 0.05 # Adjust this for pie size
+  ) +
+  scale_fill_manual(
+    values = c("#bbfc67", "#fa56ef", "#56c1fa"),
+    name = "Genotype",
+    breaks = c("GG", "GA", "AA"),
+    labels = c("GG", "GA", "AA")
+  ) +
+
+  # Annotate SNP name
+  annotate(
+    geom = "text",
+    label = snp_label,
+    x = Inf,
+    y = Inf,
+    color = "black",
+    vjust = 1.2,
+    hjust = 1,
+    size = 5,     # Adjust the text size as desired
+    fontface = "bold"
+  ) +
+
+  # Your custom theme:
+  my_theme() +
+  labs(title = "BIO1 = Annual Mean Temperature", x = "Longitude", y = "Latitude")
+
+print(p)
+
+
+# Save the plot
+ggsave(
+  here("output", "local_adaptation", "env_variables", "bio1.pdf"),
+  plot = p,
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+
+```{r, fig.height=6, fig.width=6, eval=FALSE}
+# library(here)
+# library(readr)
+# library(dplyr)
+# library(ggplot2)
+# library(viridis)
+# library(sf)
+# library(rnaturalearth)
+# library(terra)
+# library(scatterpie)
+# library(ggnewscale)
+
+# Provide the filename for the genotype data
+filename <- "AX-93250246.txt"
+
+# Read data
+input_path <- here("output", "local_adaptation", "genotype_files", filename)
+data <- read.table(
+  input_path,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  colClasses = c("character")
+)
+
+# Assuming coords is already loaded
+# Join data
+coords2 <- inner_join(coords, data, by = "Stratum")
+
+# Convert specific columns to numeric
+coords2[, 5:7] <- lapply(coords2[, 5:7], function(x) as.numeric(as.character(x)))
+
+genotype1 <- colnames(coords2)[5]
+genotype2 <- colnames(coords2)[6]
+genotype3 <- colnames(coords2)[7]
+
+# Extract SNP name from the filename
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Genotype names for the legend
+genotypes_for_legend <- c(genotype1, genotype2, genotype3)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+prec3 <- rast(here("output", "local_adaptation", "sambada", "wc0.5", "prec3.tif"))
+prec3_rescaled <- prec3 / 1
+
+# Crop and mask the raster to Brazil boundaries
+prec3_brazil <- crop(prec3_rescaled, brazil)
+prec3_brazil <- mask(prec3_brazil, brazil)
+
+# Convert the raster to a data frame for ggplot
+df_prec3 <- as.data.frame(prec3_brazil, xy = TRUE)
+
+# Source your custom theme
+source(here("scripts", "analysis", "my_theme2.R"))
+
+# Convert raster to polygons
+# Convert SpatRaster to RasterLayer
+prec3_brazil_raster <- raster::raster(prec3_brazil)
+
+# Convert raster to polygons
+prec3_brazil_raster_coarse <- raster::aggregate(prec3_brazil_raster, fact = 5)
+df_prec3_polygon <- raster::rasterToPolygons(prec3_brazil_raster_coarse)
+
+# Pre-assign colors to the scatterpie data based on Stratum
+coords2$pie_fill <- factor(coords2$Stratum, 
+                           levels = c(genotype1, genotype2, genotype3),
+                           labels = c("#bbfc67", "#fa56ef", "#56c1fa"))
+
+# Extract SNP name from the filename (Assuming the name format remains consistent)
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Create base map using ggplot
+p <- ggplot() +
+
+  # Plot raster data directly
+  geom_raster(data = df_prec3, aes(x = x, y = y, fill = prec3)) +
+  scale_fill_viridis_c(name = "Preciptation") +
+  
+  # Add the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  
+  # Introduce new scale for pies
+  new_scale_fill() +
+  
+  # Use geom_scatterpie with corrected genotype column names
+  geom_scatterpie(
+    aes(x = Longitude, y = Latitude, group = Stratum, fill = factor(pie_fill)),
+    data = coords2,
+    cols = c("TT", "TG", "GG"),
+    size = 0.05 # Adjust this for pie size
+  ) +
+  scale_fill_manual(
+    values = c("#bbfc67", "#fa56ef", "#56c1fa"),
+    name = "Genotype",
+    breaks = c("TT", "TG", "GG"),
+    labels = c("TT", "TG", "GG")
+  ) +
+
+  # Annotate SNP name
+  annotate(
+    geom = "text",
+    label = snp_label,
+    x = Inf,
+    y = Inf,
+    color = "black",
+    vjust = 1.2,
+    hjust = 1,
+    size = 5,     # Adjust the text size as desired
+    fontface = "bold"
+  ) +
+
+  # Your custom theme:
+  my_theme() +
+  labs(title = "PREC3 = Precipitation in March", x = "Longitude", y = "Latitude")
+
+print(p)
+
+
+# Save the plot
+ggsave(
+  here("output", "local_adaptation", "env_variables", "prec3.pdf"),
+  plot = p,
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+```{r, fig.height=6, fig.width=6, eval=FALSE}
+# library(here)
+# library(readr)
+# library(dplyr)
+# library(ggplot2)
+# library(viridis)
+# library(sf)
+# library(rnaturalearth)
+# library(terra)
+# library(scatterpie)
+# library(ggnewscale)
+
+coords2 <- coords2 |>
+  dplyr::select(-pie_fill)
+
+# Provide the filename for the genotype data
+filename <- "AX-93259181.txt"
+
+# Read data
+input_path <- here("output", "local_adaptation", "genotype_files", filename)
+data <- read.table(
+  input_path,
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  colClasses = c("character")
+)
+
+# Assuming coords is already loaded
+# Join data
+coords2 <- inner_join(coords, data, by = "Stratum")
+
+# Convert specific columns to numeric
+coords2[, 5:7] <- lapply(coords2[, 5:7], function(x) as.numeric(as.character(x)))
+
+genotype1 <- colnames(coords2)[5]
+genotype2 <- colnames(coords2)[6]
+genotype3 <- colnames(coords2)[7]
+
+# Extract SNP name from the filename
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Genotype names for the legend
+genotypes_for_legend <- c(genotype1, genotype2, genotype3)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio14 <- rast(here("output", "local_adaptation", "sambada", "wc0.5", "bio14.tif"))
+bio14_rescaled <- bio14 / 1
+
+# Crop and mask the raster to Brazil boundaries
+bio14_brazil <- crop(bio14_rescaled, brazil)
+bio14_brazil <- mask(bio14_brazil, brazil)
+
+# Convert the raster to a data frame for ggplot
+df_bio14 <- as.data.frame(bio14_brazil, xy = TRUE)
+
+# Source your custom theme
+source(here("scripts", "analysis", "my_theme2.R"))
+
+# Convert raster to polygons
+# Convert SpatRaster to RasterLayer
+bio14_brazil_raster <- raster::raster(bio14_brazil)
+
+# Convert raster to polygons
+bio14_brazil_raster_coarse <- raster::aggregate(bio14_brazil_raster, fact = 5)
+df_bio14_polygon <- raster::rasterToPolygons(bio14_brazil_raster_coarse)
+
+# Pre-assign colors to the scatterpie data based on Stratum
+coords2$pie_fill <- factor(coords2$Stratum, 
+                           levels = c(genotype1, genotype2, genotype3),
+                           labels = c("#bbfc67", "#fa56ef", "#56c1fa"))
+
+# Extract SNP name from the filename (Assuming the name format remains consistent)
+snp_name <- gsub(".txt", "", filename)
+snp_label <- paste("SNP", snp_name)
+
+# Detecting genotype columns from the data
+genotype_columns <- setdiff(names(coords2), c("Stratum", "Longitude", "Latitude", "SNP"))
+
+# You've provided specific colors for the genotypes
+color_mapping <- setNames(c("#bbfc67", "#fa56ef", "#56c1fa"), genotype_columns)
+
+
+# Create base map using ggplot
+p <- ggplot() +
+
+  # Plot raster data directly
+  geom_raster(data = df_bio14, aes(x = x, y = y, fill = bio14)) +
+  scale_fill_viridis_c(name = "Preciptation") +
+  
+  # Add the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  
+  # Introduce new scale for pies
+  new_scale_fill() +
+  
+  # Use geom_scatterpie with corrected genotype column names
+  geom_scatterpie(
+    aes(x = Longitude, y = Latitude, group = Stratum, fill = factor(pie_fill)),
+    data = coords2,
+    cols = c("TT", "TG", "GG"),
+    size = 0.05 # Adjust this for pie size
+  ) +
+  scale_fill_manual(
+  values = color_mapping,
+  name = "Genotype",
+  breaks = names(color_mapping),
+  labels = names(color_mapping)
+   ) +
+
+  # Annotate SNP name
+  annotate(
+    geom = "text",
+    label = snp_label,
+    x = Inf,
+    y = Inf,
+    color = "black",
+    vjust = 1.2,
+    hjust = 1,
+    size = 5,     # Adjust the text size as desired
+    fontface = "bold"
+  ) +
+
+  # Your custom theme:
+  my_theme() +
+  labs(title = "BIO14 = Precipitation in the driest month", x = "Longitude", y = "Latitude")
+
+print(p)
+
+
+# Save the plot
+ggsave(
+  here("output", "local_adaptation", "env_variables", "bio14.pdf"),
+  plot = p,
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+We can check the SNPs associated with bio1
+```{r, eval=FALSE}
+head(subset_multi_res_passG)
+```
+
+
+```{r, eval=FALSE}
+bio_pass <- subset_multi_res_passG |>
+  dplyr::filter(Env_1 == "bio1")
+
+unique(bio_pass$SNP)
+```
+
+Check how many variables are associated with each SNP
+```{r, eval=FALSE}
+snps_per_var <- subset_multi_res_passG |>
+  group_by(SNP) |>
+  summarize(
+    num_unique_Env1 = n_distinct(Env_1),
+    associated_Env1 = paste(unique(Env_1), collapse = ", ")
+  ) |>
+  arrange(-num_unique_Env1)
+head(snps_per_var)
+```
+
+Save as table
+
+```{r, eval=FALSE}
+# Create a flextable
+snps_table <- flextable(snps_per_var)
+
+# Apply the zebra theme
+snps_table <- theme_zebra(snps_table, 
+                          odd_header = "#CFCFCF", 
+                          odd_body = "#EFEFEF", 
+                          even_header = "transparent", 
+                          even_body = "transparent")
+
+# Add a caption
+snps_table <- set_caption(snps_table, caption = "Summary of SNPs associated with multiple environmental variables")
+
+# Save to a Word document
+doc <- read_docx()
+doc <- body_add_flextable(doc, snps_table)
+print(doc, target = here("output", "local_adaptation", "SNPs_local_adaptation_by_env.docx"))
+snps_table
+```
+
+```{r, eval=FALSE}
+genotypes_per_var <- subset_multi_res_passG |>
+  group_by(Marker) |>
+  summarize(
+    num_unique_Env1 = n_distinct(Env_1),
+    associated_Env1 = paste(unique(Env_1), collapse = ", ")
+  ) |>
+  arrange(-num_unique_Env1)
+head(genotypes_per_var)
+```
+Save as table
+
+```{r, eval=FALSE}
+# Create a flextable
+snps_table <- flextable(genotypes_per_var)
+
+# Apply the zebra theme
+snps_table <- theme_zebra(snps_table, 
+                          odd_header = "#CFCFCF", 
+                          odd_body = "#EFEFEF", 
+                          even_header = "transparent", 
+                          even_body = "transparent")
+
+# Add a caption
+snps_table <- set_caption(snps_table, caption = "Summary of genotypes associated with multiple environmental variables")
+
+# Save to a Word document
+doc <- read_docx()
+doc <- body_add_flextable(doc, snps_table)
+print(doc, target = here("output", "local_adaptation", "Genotypes_local_adaptation_by_env.docx"))
+snps_table
+```
+
+
+Make word cloud plot
+
+```{r, eval=FALSE}
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+
+generate_wordcloud <- function(column_data) {
+    # Convert the column values to character
+    column_data <- as.character(column_data)
+   
+    # Split the values by comma
+    words <- unlist(strsplit(column_data, ", "))
+   
+    # Create a corpus from the words
+    corpus <- Corpus(VectorSource(words))
+   
+    # Create a term-document matrix
+    dtm <- DocumentTermMatrix(corpus)
+   
+    # Convert the term-document matrix to a matrix
+    freq_matrix <- as.matrix(dtm)
+   
+    # Calculate word frequencies
+    word_freq <- colSums(freq_matrix)
+    
+    # Ensure no NA or zero frequency values
+    word_freq <- word_freq[word_freq > 0]
+   
+    # Generating a palette of colors; here, using a palette of 10 colors from the "Dark2" palette
+    # Adjust the number "10" if you want more or fewer colors. 
+    palette_colors <- brewer.pal(min(12, length(word_freq)), "Paired")
+    
+    # Create a word cloud plot with a constant scale value and the palette colors
+    wordcloud(words = names(word_freq), freq = word_freq, scale = c(3, 0.5), colors = palette_colors)
+}
+
+# Assuming your data 'genotypes_per_var' is loaded into the environment
+# Generate a colorful word cloud for the associated_Env1 column
+generate_wordcloud(genotypes_per_var$associated_Env1)
+
+```
+
+We can save as pdf
+```{r, eval=FALSE}
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+
+generate_wordcloud <- function(column_data, filename = "wordcloud.pdf") {
+    # Convert the column values to character
+    column_data <- as.character(column_data)
+   
+    # Split the values by comma
+    words <- unlist(strsplit(column_data, ", "))
+   
+    # Create a corpus from the words
+    corpus <- Corpus(VectorSource(words))
+   
+    # Create a term-document matrix
+    dtm <- DocumentTermMatrix(corpus)
+   
+    # Convert the term-document matrix to a matrix
+    freq_matrix <- as.matrix(dtm)
+   
+    # Calculate word frequencies
+    word_freq <- colSums(freq_matrix)
+    
+    # Ensure no NA or zero frequency values
+    word_freq <- word_freq[word_freq > 0]
+   
+    # Generating a palette of colors; using a palette of 8 colors from the "Dark2" palette
+    palette_colors <- brewer.pal(min(12, length(word_freq)), "Paired")
+    
+    # Open the PDF device
+    pdf(filename)
+   
+    # Create a word cloud plot with a constant scale value and the palette colors
+    wordcloud(words = names(word_freq), freq = word_freq, scale = c(3, 0.5), colors = palette_colors)
+    
+    # Close the PDF device
+    dev.off()
+}
+
+# Generate a colorful word cloud for the associated_Env1 column and save it as a PDF
+generate_wordcloud(genotypes_per_var$associated_Env1, here("output","local_adaptation","figures","genotypes_wordcloud.pdf"))
+
+```
+
+
+### 8.6. Plot all SNPs
+```{bash}
+head scripts/files/karyotype.txt
+```
+
+```{r}
+karyotype_data <- read.table("scripts/files/karyotype2.txt", header=FALSE, col.names=c("chromosome", "start", "end", "band", "type"), stringsAsFactors = FALSE)
+head(karyotype_data)
+```
+
+
+```{r}
+library(karyoploteR)
+library(GenomicRanges)
+
+# Create a custom genome specification using your chromosome lengths
+chromosome_lengths <- data.frame(
+  chromosome = unique(karyotype_data$chromosome),
+  len = aggregate(end ~ chromosome, data = karyotype_data, max)$end
+)
+
+# Create a GRanges object from your karyotype_data
+karyotype_gr <- GRanges(
+  seqnames = Rle(karyotype_data$chromosome),
+  ranges = IRanges(start = karyotype_data$start, end = karyotype_data$end),
+  # id = karyotype_data$id,
+  type = karyotype_data$type,
+  band = gsub("([0-9]+)([pq])([0-9]+)", "\\2\\3.\\1", karyotype_data$band)  
+)
+
+# Map 'type' to 'gieStain' for karyoploteR compatibility
+type_to_gieStain <- function(type) {
+  switch(type,
+         "TEL" = "gpos100",
+         "ACEN" = "acen",
+         "\\N" = "gpos50",
+         "gpos50"  # Default
+  )
+}
+
+# Add gieStain to custom_cytobands
+custom_cytobands <- karyotype_gr
+custom_cytobands$gieStain <- sapply(mcols(custom_cytobands)$type, type_to_gieStain)
+
+# Create the karyotype plot with custom cytobands
+kp <- plotKaryotype(genome = chromosome_lengths, cytobands = custom_cytobands)
+kpAddBaseNumbers(kp)
+```
+
+
+```{r WORKS2, fig.height=6, fig.width=10}
+library(ggplot2)
+
+# Create a custom genome specification using your chromosome lengths
+chromosome_lengths <- data.frame(
+  chromosome = unique(karyotype_data$chromosome),
+  len = aggregate(end ~ chromosome, data = karyotype_data, max)$end
+)
+
+# Create a GRanges object from your karyotype_data
+karyotype_gr <- GRanges(
+  seqnames = Rle(karyotype_data$chromosome),
+  ranges = IRanges(start = karyotype_data$start, end = karyotype_data$end),
+  # id = karyotype_data$id,
+  type = karyotype_data$type,
+  band = gsub("([0-9]+)([pq])([0-9]+)", "\\2\\3.\\1", karyotype_data$band)  
+)
+
+# Map 'type' to 'gieStain' for karyoploteR compatibility
+type_to_gieStain <- function(type) {
+  switch(type,
+         "TEL" = "gpos100",
+         "ACEN" = "acen",
+         "\\N" = "gpos50",
+         "gpos50"  # Default
+  )
+}
+
+# Add gieStain to custom_cytobands
+karyotype_data$gieStain <- sapply(mcols(karyotype_gr)$type, type_to_gieStain)
+
+# Convert GRanges to data.frame
+df <- as.data.frame(karyotype_data)
+
+# Convert 'chromosome' column to character
+df$chromosome <- as.character(df$chromosome)
+
+# Now sort the dataframe by 'chromosome' and 'start'
+df <- df %>% arrange(chromosome, start)
+
+# Assign 'even' and 'odd' for consecutive 'gpos50' bands within each chromosome
+df$gieStain[df$gieStain == "gpos50"] <- with(df, ave(gieStain, chromosome, FUN = function(x) {
+  ifelse(cumsum(x == "gpos50") %% 2 == 0, "gpos50_even", "gpos50_odd")
+}))[df$gieStain == "gpos50"]
+
+
+# Create color mapping
+gieStain_to_color <- function(gieStain) {
+  switch(gieStain,
+         "gpos100" = "black",
+         "acen" = "magenta",
+         "gpos50_odd" = "gray",
+         "gpos50_even" = "white",
+         "default"  # Default
+  )
+}
+
+# Convert chromosome names to factor for correct plotting order
+# Convert chromosome names to factor for correct plotting order
+df$chromosome <- factor(df$chromosome, levels = unique(df$chromosome))
+
+df_filtered <- df[df$chromosome %in% c("1", "2", "3"), ]
+
+
+# Import the data
+snps_data <- read.table(here("output", "local_adaptation", "SNPs_local_adaptation.txt"), 
+                        header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# We have the transcript but not of them are different nucleotide change, so we can remove it
+# Remove the Transcript column and keep only unique Gene entries
+snps_data <- snps_data |>
+  dplyr::select(-Transcript) |>
+  distinct(Gene, .keep_all = TRUE) |>
+  dplyr::select(Chromosome, Position, SNP, Gene)
+
+# Sort the snps_data
+snps_data <- snps_data[order(snps_data$Chromosome, snps_data$Position), ]
+
+# Initialize variables to track cluster IDs and SNP positions
+cluster_id <- 1
+last_position <- snps_data$Position[1]
+snps_data$Cluster <- NA
+
+# Assign cluster IDs based on SNP positions
+for (i in 1:nrow(snps_data)) {
+  if (i > 1 && snps_data$Chromosome[i] != snps_data$Chromosome[i-1]) {
+    last_position <- -Inf  # Reset for new chromosome
+  }
+  
+  if (!is.na(snps_data$Position[i]) && !is.na(snps_data$Chromosome[i])) {
+    if (snps_data$Position[i] - last_position > 10e6) {
+      cluster_id <- cluster_id + 1
+      last_position <- snps_data$Position[i]
+    }
+    snps_data$Cluster[i] <- cluster_id
+  }
+}
+
+
+# Summary
+# table(snps_data$Cluster)
+
+# cluster_data <- snps_data  |>
+#   group_by(Chromosome, Cluster)  |>
+#   summarise(cluster_start = min(Position), cluster_end = max(Position), .groups = "drop")
+
+
+cluster_data <- snps_data  |>
+  group_by(Chromosome, Cluster) |>
+  summarise(
+    cluster_start = min(Position),
+    cluster_end = max(Position),
+    num_snps = n(),  # Count the number of rows (i.e., SNPs) in each group
+    .groups = "drop"
+  )
+```
+
+
+```{r, fig.height=6, fig.width=10}
+# Define the height of each chromosome bar
+bar_height <- 0.2
+
+p <- ggplot(
+  df_filtered,
+  aes(
+    xmin = start,
+    xmax = end,
+    ymin = as.numeric(chromosome) - bar_height / 2,
+    ymax = as.numeric(chromosome) + bar_height / 2
+  )
+) +
+  geom_rect(aes(fill = gieStain), color = "black") +
+  scale_fill_manual(
+    values = sapply(unique(df_filtered$gieStain), gieStain_to_color),
+    breaks = c("acen", "gpos100"),
+    # Only show these legend items
+    labels = c("Centromere", "Telomere"),
+    # Rename the labels
+    name = ""  # Remove legend title by setting its name to an empty string
+  ) +
+  # Add band annotation
+  geom_text_repel(
+    aes(
+      x = (start + end) / 2,
+      y = as.numeric(chromosome) - bar_height / 2,
+      label = band
+    ),
+    inherit.aes = TRUE,
+    size = 3,
+    nudge_y = -0.15,
+    box.padding = 0.3,
+    segment.size = 0.2,
+    direction = "y"
+  ) +
+  geom_text_repel(
+    data = cluster_data,
+    aes(
+      x = (cluster_start + cluster_end) / 2,
+      y = as.numeric(Chromosome) + bar_height / 2,
+      label = paste0(Cluster, " (", num_snps, ")")
+    ),
+    inherit.aes = FALSE,
+    size = 3,
+    nudge_y = 0.2,
+    box.padding = 0.3,
+    segment.size = 0.8,
+    min.segment.length = 0.5,
+    direction = "y",
+    segment.curvature = 0,
+    color = "red"
+  ) +
+  scale_x_continuous(
+    labels = function(x)
+      scales::comma(x / 10 ^ 6)
+  ) +
+  labs(y = "Chromosome", x = "Position (Mb)") +
+  my_theme() +
+  theme(
+    axis.text.y = element_text(angle = 0),
+    legend.position = "top",
+    # Move legend to the top
+    legend.title = element_blank()  # Remove legend title
+  ) +
+  scale_y_continuous(breaks = c(1, 2, 3),
+                     labels = c("Chr1", "Chr2", "Chr3"))
+
+print(p)
+
+
+# Save the plot
+ggsave(
+  here("output", "local_adaptation", "figures", "clusters.pdf"),
+  plot = p,
+  width  = 10,
+  height = 8,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+Select the environmental variables
+```{r, eval=FALSE}
+# Separate the associated_Env1 column into multiple rows
+long_snps_per_var <- snps_per_var |>
+  separate_rows(associated_Env1, sep = ",\\s*")
+
+# Merge with snps_data to get cluster info
+merged_data <- long_snps_per_var |>
+  inner_join(snps_data, by = "SNP")
+
+# Count the number of SNPs associated with each variable in each cluster
+count_data <- merged_data |>
+  group_by(Cluster, associated_Env1) |>
+  summarise(num_SNPs = n_distinct(SNP), .groups = "drop") |>
+  filter(!str_detect(associated_Env1, "^pop") & 
+         associated_Env1 != "Latitude" & 
+         associated_Env1 != "Longitude")
+
+head(count_data)
+```
+
+
+Given this context, let's categorize the variables:
+
+Baseline Temperature:
+BIO1: Annual Mean Temperature
+
+Temperature Fluctuations:
+BIO5: Max Temperature of Warmest Month
+BIO2: Mean Diurnal Range (Mean of monthly (max temp - min temp))
+BIO3: Isothermality (BIO2/BIO7) (* 100)
+
+Baseline Precipitation:
+BIO12: Annual Precipitation
+
+
+Variable Precipitation:
+BIO13: Precipitation of Wettest Month
+BIO14: Precipitation of Driest Month
+BIO18: Precipitation of Warmest Quarter
+BIO19: Precipitation of Coldest Quarter
+prec1: Rain in January
+prec3: Rain in March
+prec10: Rain in October
+
+
+You can refer to genetic markers associated with the Stable Measures as being potentially linked to long-term, consistent environmental pressures that have historically characterized a region. These might be indicative of fundamental adaptations that have been built over long evolutionary time scales.
+
+Markers associated with the Variable Measures, on the other hand, might indicate more recent or dynamic evolutionary pressures, potentially representing adaptations to fluctuations, extreme events, or seasonal changes. These might be adaptations that provide resilience or flexibility in the face of change.
+
+Remember, the actual genetic interpretation always depends on the specific marker, its function, and other biological context. But from an environmental perspective, considering stability versus variability can offer an informative lens.
+
+Stability
+bio1
+bio12
+
+Variability
+bio5, bio2, bio3, bio13, bio14, bio18, bio19, prec1, prec3, prec10
+
+Now we can summarize how many SNPs we have in each cluster associate with Stability or Variability
+
+```{r, eval=FALSE}
+# Define the variables in the Stability and Variability categories
+stability_vars <- c("bio1", "bio12")
+variability_vars <- c("bio5", "bio2", "bio3", "bio13", "bio14", "bio18", "bio19", "prec1", "prec3", "prec10", "prec11")
+
+# Add a new column to classify each variable
+count_data <- count_data |>
+  mutate(category = case_when(
+    associated_Env1 %in% stability_vars ~ "Stability",
+    associated_Env1 %in% variability_vars ~ "Variability",
+    TRUE ~ "Other"
+  ))
+
+# Summarize data
+summary_data <- count_data |>
+  group_by(Cluster, category) |>
+  summarise(total_SNPs = sum(num_SNPs), .groups = "drop")
+
+
+# Compute proportions
+summary_data <- summary_data |>
+  group_by(Cluster) |>
+  mutate(proportion = total_SNPs / sum(total_SNPs))
+
+head(summary_data)
+```
+
+```{r, eval=FALSE}
+library(ggplot2)
+
+# Using the summary_data to plot the pie chart
+ggplot(summary_data, aes(x = "", y = proportion, fill = category)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  facet_wrap(~Cluster) +
+  scale_fill_manual(
+    values = c("Variability" = "red", "Stability" = "lightgreen"),
+    name = "Category"
+  ) +  # Set fill colors here
+  labs(title = "Proportion of Category for each Cluster", 
+       x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid  = element_blank(),
+        strip.text.x = element_text(size = 12))
+
+
+# Save the plot
+ggsave(
+  here("output", "local_adaptation", "figures", "pies.pdf"),
+  width  = 10,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+BIO1 = Annual Mean Temperature
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(raster)
+library(here)
+library(scatterpie)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio1 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio1.tif"
+  ))
+
+bio1_rescaled <- bio1 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio1_brazil <- crop(bio1_rescaled, brazil)
+bio1_brazil <- mask(bio1_brazil, brazil)
+
+# Plot the masked raster
+plot(bio1_brazil, main = "BIO1 = Annual Mean Temperature")
+
+# Add points to the plot for each city location
+# points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+
+
+# Convert the raster to a data frame for ggplot
+df_bio1 <- as.data.frame(bio1_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio1, aes(x = x, y = y, fill = bio1)) +
+  scale_fill_viridis_c(name = "Temperature") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO1 = Annual Mean Temperature", x = "Longitude", y = "Latitude") +
+  my_theme() + 
+  geom_scatterpie(
+      aes(x = Longitude, y = Latitude, group = Stratum),
+      data = coords2,
+      cols = c(genotype1, genotype2, genotype3),
+      legend_name = "Genotype"
+    ) +
+     scale_fill_manual(
+      labels = genotypes_for_legend, # Use the genotype names
+      values = c("#bbfc67", "#fa56ef", "#56c1fa")
+    ) 
+
+# save it
+# ggsave(
+#   here("output", "local_adaptation", "env_variables", "bio1.pdf"),
+#   width  = 6,
+#   height = 6,
+#   units  = "in",
+#   device = cairo_pdf
+# )
+```
+
+
+
+
+
+
+
+BIO12 = Annual Precipitation
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(raster)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio12 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio12.tif"
+  ))
+
+bio12_rescaled <- bio12 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio12_brazil <- crop(bio12_rescaled, brazil)
+bio12_brazil <- mask(bio12_brazil, brazil)
+
+# Plot the masked raster
+plot(bio12_brazil, main = "BIO12 = Annual Precipitation")
+
+# Convert the raster to a data frame for ggplot
+df_bio12 <- as.data.frame(bio12_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio12, aes(x = x, y = y, fill = bio12)) +
+  scale_fill_viridis_c(name = "BIO12 Value") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO12 = Annual Precipitation", x = "Longitude", y = "Latitude") +
+  my_theme()
+
+# save it 
+ggsave(
+  here("output", "local_adaptation", "figures", "bio12.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+BIO4 = Temperature Seasonality
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio4 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio4.tif"
+  ))
+
+bio4_rescaled <- bio4 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio4_brazil <- crop(bio4_rescaled, brazil)
+bio4_brazil <- mask(bio4_brazil, brazil)
+
+# Plot the masked raster
+plot(bio4_brazil, main = "BIO4 = Temperature Seasonality")
+
+# Convert the raster to a data frame for ggplot
+df_bio4 <- as.data.frame(bio4_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio4, aes(x = x, y = y, fill = bio4)) +
+  scale_fill_viridis_c(name = "BIO4 Value") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO4 = Temperature Seasonality", x = "Longitude", y = "Latitude") +
+  my_theme()
+
+# save it
+ggsave(
+  here("output", "local_adaptation", "figures", "bio4.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+
+
+
+
+
+
+
+
+### 6.2 Manhattan plots using R.sambada plotting function
+
+We have to work on the covariates to taking into account the population structure, do RDA analysis, change the
+autocorrelation parameters, we can subset the data, etc. We have several options, besides we could use a different
+algorithm to run our local adaptation analysis. For now, I will plot some variables as curiosity since they were not significantly associated with the genetic data.
+
+BIOCLIM Variables:
+BIO1 = Annual Mean Temperature 
+BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp)) 
+BIO3 = Isothermality (BIO2/BIO7) (\* 100) 
+BIO4 = Temperature Seasonality (standard deviation \*100) 
+BIO5 = Max Temperature of Warmest Month 
+BIO6 = Min Temperature of Coldest Month 
+BIO7 = Temperature Annual Range (BIO5-BIO6) 
+BIO8 = Mean Temperature of Wettest Quarter 
+BIO9 = Mean Temperature of Driest Quarter
+BIO10 = Mean Temperature of Warmest Quarter
+BIO11 = Mean Temperature of Coldest Quarter 
+BIO12 = Annual Precipitation 
+BIO13 = Precipitation of Wettest Month 
+BIO14 = Precipitation of Driest Month 
+BIO15 = Precipitation Seasonality (Coefficient of Variation) 
+BIO16 = Precipitation of Wettest Quarter 
+BIO17 = Precipitation of Driest Quarter 
+BIO18 = Precipitation of Warmest Quarter
+BIO19 = Precipitation of Coldest Quarter
+
+Check the filtered env file to see which one we tested
+```{bash check_env_filtered2, eval=FALSE}
+head -n 1 output/local_adaptation/results/env_file_filtered.csv;
+```
+
+We can use sambada plotting function instead of ggplot as well
+```{r plot_bio1, eval=FALSE}
+plotManhattan(prep_multi,
+  c("prec3"),
+  chromo = "all",
+  valueName = "pvalueG",
+  # threshold = -1
+  threshold = pVal.threshold
+)
+```
+
+## 7. Interactive plotting of results
+
+Plots the Manhattan plot for a given environmental variable. The plot is interactive and a map of
+the distribution of the marker can be retrieved as well as nearby genes listed in Ensembl (not for
+our genome).
+```{r plot_interactive, eval=FALSE}
+# Env file
+envFile2 <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "env_file_filtered.csv"
+)
+
+
+# gds file
+gdsFile <- here(
+  "output",
+  "local_adaptation",
+  "sambada",
+  "brazil.gds"
+)
+
+# this code below will open an windown on Rstudio, you can click on the markers to explore the data. This is the fun part :)
+plotResultInteractive(
+  preparedOutput = prep_multi,
+  varEnv = 'bio1',
+  envFile = envFile2,
+  species = NULL,
+  pass = NULL,
+  x = 'Longitude',
+  y = 'Latitude',
+  gdsFile = gdsFile,
+  IDCol = 'ind',
+  popStrCol = 'pop2'
+)
+```
+
+
+## 8. Plot map
+
+We can check the markers that passed our multiple test correction
+```{r check_passed_markers, eval=FALSE}
+head(bi_res_passG)
+```
+
+Lets plot the first 1: AX-584968304_TT
+```{r plot_map, eval=FALSE}
+plotMap(
+  envFile = envFile2,
+  x = 'Longitude',
+  y = 'Latitude',
+  locationProj = 4326,
+  popStrCol = "pop2",
+  gdsFile = gdsFile,
+  markerName = 'AX-93262583_TT',
+  mapType = 'marker',
+  varEnvName = 'bio1',
+  simultaneous = FALSE,
+  saveType = "pdf"
+)
+
+```
+
+
+
+```{r plot_env_variables, eval=FALSE}
+library(predicts)
+
+bio1 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio1.tif"
+  ))
+
+bio1_rescaled <- bio1 / 10
+
+plot(bio1_rescaled, xlim = c(127, 143), ylim = c(28,42), main = "BIO1 = Annual Mean Temperature ")
+
+# Add points to the plot for each city location
+# points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+bio 1
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio1 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio1.tif"
+  ))
+
+bio1_rescaled <- bio1 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio1_brazil <- crop(bio1_rescaled, brazil)
+bio1_brazil <- mask(bio1_brazil, brazil)
+
+# Plot the masked raster
+plot(bio1_brazil, main = "BIO1 = Annual Mean Temperature ")
+
+
+# Convert the raster to a data frame for ggplot
+df_bio1 <- as.data.frame(bio1_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio1, aes(x = x, y = y, fill = bio1)) +
+  scale_fill_viridis_c(name = "BIO1 Value") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO1 = Annual Mean Temperature", x = "Longitude", y = "Latitude") +
+  my_theme()
+
+# save it
+ggsave(
+  here("output", "local_adaptation", "figures", "bio1.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+BIO12 = Annual Precipitation
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio12 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio12.tif"
+  ))
+
+bio12_rescaled <- bio12 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio12_brazil <- crop(bio12_rescaled, brazil)
+bio12_brazil <- mask(bio12_brazil, brazil)
+
+# Plot the masked raster
+plot(bio12_brazil, main = "BIO12 = Annual Precipitation")
+
+
+
+# Convert the raster to a data frame for ggplot
+df_bio12 <- as.data.frame(bio12_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio12, aes(x = x, y = y, fill = bio12)) +
+  scale_fill_viridis_c(name = "BIO12 Value") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO12 = Annual Precipitation", x = "Longitude", y = "Latitude") +
+  my_theme()
+
+# save it 
+ggsave(
+  here("output", "local_adaptation", "figures", "bio12.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+BIO4 = Temperature Seasonality
+```{r, eval=FALSE}
+library(predicts)
+library(rnaturalearth)
+library(sf)
+library(dplyr)
+
+# Get the world countries data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Filter for Brazil
+brazil <- world %>%
+  filter(admin == "Brazil")
+
+# Load your raster
+bio4 <- rast(here(
+    "output", "local_adaptation", "sambada", "wc0.5", "bio4.tif"
+  ))
+
+bio4_rescaled <- bio4 / 10
+
+# Crop and mask the raster to Brazil boundaries
+bio4_brazil <- crop(bio4_rescaled, brazil)
+bio4_brazil <- mask(bio4_brazil, brazil)
+
+# Plot the masked raster
+plot(bio4_brazil, main = "BIO4 = Temperature Seasonality")
+
+
+# Convert the raster to a data frame for ggplot
+df_bio4 <- as.data.frame(bio4_brazil, xy = TRUE)
+
+source(
+  here(
+    "scripts", "analysis", "my_theme2.R"
+  )
+)
+# Plot with ggplot
+ggplot() +
+  # Plot the raster data
+  geom_raster(data = df_bio4, aes(x = x, y = y, fill = bio4)) +
+  scale_fill_viridis_c(name = "BIO4 Value") + 
+  # Plot the Brazil boundary
+  geom_sf(data = brazil, fill = NA, color = "black") +
+  labs(title = "BIO4 = Temperature Seasonality", x = "Longitude", y = "Latitude") +
+  my_theme()
+
+# save it
+ggsave(
+  here("output", "local_adaptation", "figures", "bio4.pdf"),
+  width  = 6,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+```
+
+
+```{r, eval=FALSE}
+# Define a vector of variables to plot
+# vars <- c("bio1", "bio3", "bio5", "bio12", "prec10")
+bio3 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio3.tif"
+  ))
+
+
+plot(bio3, xlim =  c(127, 143), ylim = c(28,42), main = "BIO3 = Isothermality")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+```{r, eval=FALSE}
+bio5 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio5.tif"
+  ))
+
+bio5_rescaled = bio5 / 10
+
+plot(bio5_rescaled, xlim =  c(127, 143), ylim = c(28,42), main = "BIO5 = Max Temperature of Warmest Month")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+
+
+```{r, eval=FALSE}
+bio12 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio12.tif"
+  ))
+
+bio12_rescaled <- bio12 / 10
+
+plot(bio12_rescaled, xlim =  c(127, 143), ylim = c(28,42), main = "BIO12 = Annual Precipitation")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+
+
+```{r, eval=FALSE}
+bio11 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio11.tif"
+  ))
+
+bio11_rescaled <- bio11 / 10
+
+plot(bio11_rescaled, xlim =  c(127, 143), ylim = c(28,42), main = "BIO11 = Mean Temperature of Coldest Quarter ")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+```{r, eval=FALSE}
+bio6 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio6.tif"
+  ))
+
+bio6_rescaled <- bio6 / 10
+
+plot(bio6_rescaled, xlim =  c(127, 143), ylim = c(28,42), main = "BIO6 = Min Temperature of Coldest Month")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+```{r, eval=FALSE}
+bio19 <- rast(here(
+    "output", "local_adaptation", "results", "wc0.5", "bio19.tif"
+  ))
+
+
+plot(bio19, xlim = c(127, 143), ylim = c(28,42), main = "BIO19 = Precipitation of Coldest Quarter")
+# Add points to the plot for each city location
+points(city_locations$Longitude, city_locations$Latitude, col ="black", pch = 19)
+```
+
+
+BIOCLIM Variables:
+BIO1 = Annual Mean Temperature 
+BIO2 = Mean Diurnal Range (Mean of monthly (max temp - min temp)) 
+BIO3 = Isothermality (BIO2/BIO7) (\* 100) 
+BIO4 = Temperature Seasonality (standard deviation \*100) 
+BIO5 = Max Temperature of Warmest Month 
+BIO6 = Min Temperature of Coldest Month 
+BIO7 = Temperature Annual Range (BIO5-BIO6) 
+BIO8 = Mean Temperature of Wettest Quarter 
+BIO9 = Mean Temperature of Driest Quarter
+BIO10 = Mean Temperature of Warmest Quarter
+BIO11 = Mean Temperature of Coldest Quarter 
+BIO12 = Annual Precipitation 
+BIO13 = Precipitation of Wettest Month 
+BIO14 = Precipitation of Driest Month 
+BIO15 = Precipitation Seasonality (Coefficient of Variation) 
+BIO16 = Precipitation of Wettest Quarter 
+BIO17 = Precipitation of Driest Quarter 
+BIO18 = Precipitation of Warmest Quarter
+BIO19 = Precipitation of Coldest Quarter
+
